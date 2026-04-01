@@ -1,0 +1,55 @@
+---
+- name: Deploy BLE Orchestrator and MQTT
+  hosts: orchestrator_servers
+  become: yes
+  gather_facts: yes
+  max_fail_percentage: 0
+
+  pre_tasks:
+    - name: Display deployment info
+      debug:
+        msg: |
+          Deploying {{ app_name }} v{{ app_version }}
+          Target: {{ inventory_hostname }}
+          Environment: {{ environment }}
+
+    - name: Validate prerequisites
+      assert:
+        that:
+          - binary_source_dir is defined
+          - app_version is defined
+        fail_msg: "Missing required variables. Check group_vars."
+
+  roles:
+    - role: prerequisites
+      tags: [prerequisites, always]
+    
+    - role: mqtt
+      tags: [mqtt, broker]
+    
+    - role: orchestrator
+      tags: [orchestrator, app]
+
+  post_tasks:
+    - name: Verify deployment
+      block:
+        - name: Get orchestrator service status
+          systemd_service:
+            name: "{{ service_name }}"
+          register: orchestrator_status
+        
+        - name: Get MQTT service status
+          systemd_service:
+            name: mosquitto
+          register: mqtt_status
+        
+        - name: Display deployment results
+          debug:
+            msg: |
+              ✓ Orchestrator: {{ orchestrator_status.status.ActiveState }}
+              ✓ MQTT: {{ mqtt_status.status.ActiveState }}
+              ✓ Dashboard: http://{{ inventory_hostname }}:{{ orchestrator_port }}
+      tags: [never, verify]
+
+  handlers:
+    - import_tasks: ../../roles/orchestrator/handlers/main.yml

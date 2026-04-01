@@ -1,0 +1,31 @@
+# Main deployment variables
+app_name: "go-ble-orchestrator"
+app_version: "v1.1.4.1"
+app_user: "orcservice"
+app_group: "orcservice"
+app_home: "/opt/orchestrator"
+app_bin_path: "{{ app_home }}/bin/{{ app_name }}"
+app_config_path: "{{ app_home }}/config"
+app_data_path: "{{ app_home }}/data"
+app_logs_path: "{{ app_home }}/logs"
+
+# Service configuration
+service_port: 8083
+service_name: "go-ble-orchestrator"
+service_description: "BLE Orchestrator Service"
+systemd_service_path: "/etc/systemd/system/{{ service_name }}.service"
+
+# MQTT configuration
+mqtt_broker: "tcp://localhost:1883"
+mqtt_client_id: "unified-orchestrator-01"
+mqtt_broker_host: "localhost"
+mqtt_broker_port: 1883
+
+# Database
+database_path: "unified_orchestrator.db"
+
+# Binary build location (on control machine)
+binary_source_dir: "/path/to/your/CassiaConnectionTest/Cassia"
+
+# Deployment timeout
+deployment_timeout: 300

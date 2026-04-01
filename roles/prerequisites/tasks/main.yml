@@ -1,0 +1,54 @@
+---
+- name: Update system packages
+  apt:
+    update_cache: yes
+    cache_valid_time: 3600
+  become: yes
+
+- name: Install required system packages
+  apt:
+    name:
+      - curl
+      - wget
+      - systemd
+      - ca-certificates
+      - tzdata
+      - net-tools
+      - jq
+    state: present
+  become: yes
+
+- name: Create app user
+  user:
+    name: "{{ app_user }}"
+    group: "{{ app_group }}"
+    home: "{{ app_home }}"
+    shell: /usr/sbin/nologin
+    state: present
+  become: yes
+
+- name: Create application directories
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: 0755
+  loop:
+    - "{{ app_home }}"
+    - "{{ app_home }}/bin"
+    - "{{ app_config_path }}"
+    - "{{ app_data_path }}"
+    - "{{ app_logs_path }}"
+  become: yes
+
+- name: Verify directory permissions
+  file:
+    path: "{{ item }}"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: 0755
+    recurse: yes
+  loop:
+    - "{{ app_home }}"
+  become: yes

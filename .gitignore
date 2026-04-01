@@ -1,0 +1,40 @@
+# Ansible sensitive files
+inventory/group_vars/**/vault.yml
+inventory/group_vars/**/*.vault
+
+# SSH keys
+*.pem
+*.pub
+!*.pub.example
+
+# Runtime files
+*.retry
+.retry/
+retries/
+ansible-deployment.log*
+
+# Temp files
+*.tmp
+*.bak
+*~
+
+# Binaries (store git-lfs or external)
+/binaries/go-ble-orchestrator
+/binaries/ecg_metrics
+
+# Cache
+.cache/
+*.cache
+__pycache__/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environment
+venv/
+env/
+.env
+.env.local

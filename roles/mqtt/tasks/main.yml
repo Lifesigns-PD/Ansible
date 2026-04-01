@@ -1,0 +1,63 @@
+---
+- name: Install Mosquitto MQTT broker
+  apt:
+    name: mosquitto
+    state: present
+  become: yes
+
+- name: Install mosquitto clients
+  apt:
+    name: mosquitto-clients
+    state: present
+  become: yes
+
+- name: Create mosquitto config directory
+  file:
+    path: /etc/mosquitto/conf.d
+    state: directory
+    owner: mosquitto
+    group: mosquitto
+    mode: 0755
+  become: yes
+
+- name: Deploy mosquitto configuration
+  template:
+    src: mosquitto.conf.j2
+    dest: /etc/mosquitto/conf.d/orchestrator.conf
+    owner: mosquitto
+    group: mosquitto
+    mode: 0644
+  become: yes
+  notify: restart mosquitto
+
+- name: Create mosquitto data directories
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: mosquitto
+    group: mosquitto
+    mode: 0755
+  loop:
+    - /var/lib/mosquitto
+    - /var/log/mosquitto
+  become: yes
+
+- name: Enable Mosquitto service
+  systemd_service:
+    name: mosquitto
+    enabled: yes
+  become: yes
+
+- name: Start Mosquitto service
+  systemd_service:
+    name: mosquitto
+    state: started
+  become: yes
+
+- name: Verify Mosquitto is listening
+  wait_for:
+    host: localhost
+    port: "{{ mqtt_broker_port }}"
+    state: started
+    timeout: 10
+  become: yes

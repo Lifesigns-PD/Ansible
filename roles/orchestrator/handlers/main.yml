@@ -1,0 +1,17 @@
+---
+- name: reload systemd
+  systemd:
+    daemon_reload: yes
+  become: yes
+
+- name: restart orchestrator
+  systemd_service:
+    name: "{{ service_name }}"
+    state: restarted
+  become: yes
+
+- name: restart mosquitto
+  systemd_service:
+    name: mosquitto
+    state: restarted
+  become: yes

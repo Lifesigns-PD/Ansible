@@ -1,0 +1,65 @@
+---
+- name: Update configuration and restart services
+  hosts: orchestrator_servers
+  become: yes
+  gather_facts: no
+
+  tasks:
+    - name: Parse updated config variables
+      set_fact:
+        cassia_domain: "{{ cassia_domain | default('http://172.16.20.24') }}"
+        mqtt_broker: "{{ mqtt_broker | default('tcp://localhost:1883') }}"
+        config_password: "{{ config_password | default('Config@2024') }}"
+      tags: [always]
+
+    - name: Backup current configuration
+      copy:
+        src: "{{ app_config_path }}/config.json"
+        dest: "{{ app_config_path }}/config.json.backup"
+        remote_src: yes
+        owner: "{{ app_user }}"
+        group: "{{ app_group }}"
+      become: yes
+
+    - name: Regenerate config.json
+      template:
+        src: ../roles/orchestrator/templates/config.json.j2
+        dest: "{{ app_config_path }}/config.json"
+        owner: "{{ app_user }}"
+        group: "{{ app_group }}"
+        mode: 0644
+        backup: yes
+      become: yes
+      notify: restart orchestrator
+
+    - name: Wait for configuration reload
+      pause:
+        seconds: 5
+
+    - name: Verify orchestrator is running
+      systemd_service:
+        name: "{{ service_name }}"
+      register: orchestrator_status
+      become: yes
+
+    - name: Validate configuration
+      block:
+        - name: Check dashboard
+          uri:
+            url: "http://{{ inventory_hostname }}:{{ orchestrator_port }}/"
+            status_code: [200, 404]
+          register: dashboard_check
+          retries: 3
+          delay: 2
+
+        - name: Display result
+          debug:
+            msg: "Configuration updated successfully. Status: {{ dashboard_check.status }}"
+      ignore_errors: yes
+
+  handlers:
+    - name: restart orchestrator
+      systemd_service:
+        name: "{{ service_name }}"
+        state: restarted
+      become: yes

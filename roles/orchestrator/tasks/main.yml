@@ -1,0 +1,93 @@
+---
+- name: Stop orchestrator service (if running)
+  systemd_service:
+    name: "{{ service_name }}"
+    state: stopped
+  become: yes
+  ignore_errors: yes
+
+- name: Copy binary from control machine
+  copy:
+    src: "{{ binary_source_dir }}/go-ble-orchestrator"
+    dest: "{{ app_bin_path }}"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: 0755
+  become: yes
+
+- name: Copy frontend assets
+  copy:
+    src: "{{ binary_source_dir }}/frontend/"
+    dest: "{{ app_home }}/frontend"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: 0755
+  become: yes
+
+- name: Copy ecg_metrics binary
+  copy:
+    src: "{{ binary_source_dir }}/ecg_metrics"
+    dest: "{{ app_home }}/ecg_metrics"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: 0755
+  become: yes
+
+- name: Generate config.json from template
+  template:
+    src: config.json.j2
+    dest: "{{ app_config_path }}/config.json"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: 0644
+    backup: yes
+  become: yes
+  notify: restart orchestrator
+
+- name: Create systemd service file
+  template:
+    src: orchestrator.service.j2
+    dest: "{{ systemd_service_path }}"
+    owner: root
+    group: root
+    mode: 0644
+  become: yes
+  notify: reload systemd
+
+- name: Reload systemd daemon
+  systemd:
+    daemon_reload: yes
+  become: yes
+
+- name: Enable orchestrator service to start on boot
+  systemd_service:
+    name: "{{ service_name }}"
+    enabled: yes
+  become: yes
+
+- name: Start orchestrator service
+  systemd_service:
+    name: "{{ service_name }}"
+    state: started
+  become: yes
+
+- name: Wait for orchestrator to be healthy
+  uri:
+    url: "http://{{ inventory_hostname }}:{{ orchestrator_port }}/health"
+    method: GET
+    status_code: [200, 404]
+  register: result
+  until: result.status in [200, 404]
+  retries: 10
+  delay: 3
+  ignore_errors: yes
+
+- name: Check service status
+  systemd_service:
+    name: "{{ service_name }}"
+  register: service_status
+  become: yes
+
+- name: Display service status
+  debug:
+    msg: "{{ service_name }} is {{ service_status.status.ActiveState }}"

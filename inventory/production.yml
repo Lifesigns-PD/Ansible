@@ -1,0 +1,20 @@
+all:
+  vars:
+    ansible_user: ubuntu
+    ansible_port: 22
+    ansible_ssh_private_key_file: ~/.ssh/id_rsa
+
+  children:
+    orchestrator_servers:
+      hosts:
+        prod-orchestrator-01:
+          ansible_host: 10.0.1.100
+          app_version: "v1.1.4.1"
+        prod-orchestrator-02:
+          ansible_host: 10.0.1.101
+          app_version: "v1.1.4.1"
+      vars:
+        mqtt_host: "{{ inventory_hostname }}"  # Local MQTT on each server
+        orchestrator_port: 8083
+        mqtt_port: 1883
+        environment: production

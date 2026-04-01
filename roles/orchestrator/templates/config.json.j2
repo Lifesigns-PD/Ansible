@@ -1,0 +1,57 @@
+{
+    "env": "prod",
+    "databasePath": "{{ app_data_path }}/{{ database_path }}",
+    "writeToFile": true,
+    "debugMode": false,
+    "appVersion": "{{ app_version }}",
+    "configPassword": "{{ config_password }}",
+    "zstd": true,
+    "zstdLevel": 3,
+    "batch": false,
+    "endpoints": {
+        "dev": "https://dev-gateway.lifesigns.us/api/v1/public/external-device",
+        "local": "http://localhost:8000",
+        "prod": "{{ api_endpoint }}",
+        "qa": "https://api-gw.qa.lifesigns.us/api/v1/public/external-device"
+    },
+    "cassia": {
+        "clientId": "{{ cassia_client_id }}",
+        "clientSecret": "{{ cassia_client_secret }}",
+        "tokenRefreshIntervalMinutes": 59,
+        "scanIntervalSeconds": 5,
+        "acDomain": "{{ cassia_domain }}",
+        "cassiaTimeoutSeconds": 30
+    },
+    "mqtt": {
+        "broker": "{{ mqtt_broker }}",
+        "clientId": "{{ mqtt_client_id }}",
+        "scanTopic": "ble/router/scan",
+        "statusTopic": "ble/router/status",
+        "dataTopic": "ble/device/data",
+        "commandTopicPrefix": "ble/router/command",
+        "deviceStatusTopic": "ble/device/status",
+        "blacklistTopic": "ble/blacklist",
+        "routerTopic": false
+    },
+    "http": {
+        "timeoutSeconds": 30,
+        "maxIdleConns": 4000,
+        "maxIdleConnsPerHost": 4000,
+        "maxConnsPerHost": 50,
+        "idleConnTimeoutSeconds": 90,
+        "forceAttemptHTTP2": true
+    },
+    "scanAggregationSeconds": 3,
+    "workerPoolSize": 50,
+    "maxConnectionsPerRouter": {
+        "cassia": 10,
+        "esp32": 3
+    },
+    "inactivityTimeoutsSeconds": {
+        "ECG_Belt": 7,
+        "ECG_Belt_V2": 7,
+        "ER1": 10,
+        "LEPU_BELT": 10,
+        "default": 60
+    }
+}
