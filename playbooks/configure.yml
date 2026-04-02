@@ -1,7 +1,7 @@
 ---
 - name: Update configuration and restart services
-  hosts: orchestrator_servers
-  become: yes
+  hosts: all
+  become: no
   gather_facts: no
 
   tasks:
@@ -12,54 +12,61 @@
         config_password: "{{ config_password | default('Config@2024') }}"
       tags: [always]
 
+    - name: Check if config.json exists
+      stat:
+        path: "{{ app_config_path | default('/opt/go-ble-orchestrator/config') }}/config.json"
+      register: config_stat
+
     - name: Backup current configuration
       copy:
-        src: "{{ app_config_path }}/config.json"
-        dest: "{{ app_config_path }}/config.json.backup"
+        src: "{{ app_config_path | default('/opt/go-ble-orchestrator/config') }}/config.json"
+        dest: "{{ app_config_path | default('/opt/go-ble-orchestrator/config') }}/config.json.backup"
         remote_src: yes
-        owner: "{{ app_user }}"
-        group: "{{ app_group }}"
-      become: yes
+      when: config_stat.stat.exists
 
-    - name: Regenerate config.json
-      template:
-        src: ../roles/orchestrator/templates/config.json.j2
-        dest: "{{ app_config_path }}/config.json"
-        owner: "{{ app_user }}"
-        group: "{{ app_group }}"
-        mode: 0644
-        backup: yes
-      become: yes
+    - name: Update cassia_domain in config.json
+      replace:
+        path: "{{ app_config_path | default('/opt/go-ble-orchestrator/config') }}/config.json"
+        regexp: '"cassiaUrl"\s*:\s*"[^"]*"'
+        replace: '"cassiaUrl": "{{ cassia_domain }}"'
+      when: config_stat.stat.exists
+      notify: restart orchestrator
+
+    - name: Update mqtt_broker in config.json
+      replace:
+        path: "{{ app_config_path | default('/opt/go-ble-orchestrator/config') }}/config.json"
+        regexp: '"mqttBroker"\s*:\s*"[^"]*"'
+        replace: '"mqttBroker": "{{ mqtt_broker }}"'
+      when: config_stat.stat.exists
       notify: restart orchestrator
 
     - name: Wait for configuration reload
       pause:
         seconds: 5
 
-    - name: Verify orchestrator is running
-      systemd_service:
-        name: "{{ service_name }}"
-      register: orchestrator_status
-      become: yes
-
-    - name: Validate configuration
-      block:
-        - name: Check dashboard
-          uri:
-            url: "http://{{ inventory_hostname }}:{{ orchestrator_port }}/"
-            status_code: [200, 404]
-          register: dashboard_check
-          retries: 3
-          delay: 2
-
-        - name: Display result
-          debug:
-            msg: "Configuration updated successfully. Status: {{ dashboard_check.status }}"
+    - name: Verify orchestrator service status
+      shell: systemctl is-active "{{ service_name | default('go-ble-orchestrator') }}"
+      register: svc_status
       ignore_errors: yes
+
+    - name: Display service status
+      debug:
+        msg: "Service state: {{ svc_status.stdout | default('unknown') }}"
+
+    - name: Check dashboard responds
+      uri:
+        url: "http://localhost:{{ orchestrator_port | default('8083') }}/"
+        status_code: [200, 404]
+      register: dashboard_check
+      retries: 3
+      delay: 2
+      ignore_errors: yes
+
+    - name: Display result
+      debug:
+        msg: "Configuration updated. HTTP status: {{ dashboard_check.status | default('unreachable') }}"
 
   handlers:
     - name: restart orchestrator
-      systemd_service:
-        name: "{{ service_name }}"
-        state: restarted
-      become: yes
+      shell: sudo systemctl restart "{{ service_name | default('go-ble-orchestrator') }}"
+      ignore_errors: yes

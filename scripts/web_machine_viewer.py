@@ -86,19 +86,15 @@ def get_tailscale_machines_api():
                 ip = dev['addresses'][0].split('/')[0]
                 device_id = dev.get('id', '')
                 
-                # Create unique display name using hostname + last IP octet or device ID
                 if full_name and '.' in full_name:
                     base_name = full_name.split('.')[0]
                 else:
                     base_name = dev.get('hostname', 'Unknown')
                 
-                # Make it unique by appending last IP octet or short device ID
                 if device_id:
-                    # Use last 8 chars of device ID for uniqueness
                     unique_suffix = device_id[-8:]
                     display_name = f"{base_name}-{unique_suffix}"
                 else:
-                    # Fallback: use last IP octet
                     ip_last = ip.split('.')[-1] if ip else 'unknown'
                     display_name = f"{base_name}-{ip_last}"
                 
@@ -169,7 +165,9 @@ def execute_ssh(command):
         stdin, stdout, stderr = client.exec_command(command)
         exit_status = stdout.channel.recv_exit_status()
         if exit_status != 0:
-            return None, stderr.read().decode('utf-8')
+            err = stderr.read().decode('utf-8')
+            out = stdout.read().decode('utf-8')
+            return out or None, err
         return stdout.read().decode('utf-8'), None
     except Exception as e:
         active_ssh_sessions.pop(session_id, None)
@@ -195,25 +193,6 @@ def get_playbooks():
         print(f"Error reading playbooks: {e}")
     return sorted(playbooks, key=lambda x: x['name'])
 
-def get_playbook_vars(playbook_name):
-    """Extract variables and tags from a playbook"""
-    try:
-        playbook_path = PLAYBOOKS_DIR / f"{playbook_name}.yml"
-        with open(playbook_path, 'r') as f:
-            content = f.read()
-            # Look for common variable names and tags
-            vars_found = []
-            if 'cassia_domain' in content:
-                vars_found.append('cassia_domain')
-            if 'mqtt_broker' in content:
-                vars_found.append('mqtt_broker')
-            if 'config_password' in content:
-                vars_found.append('config_password')
-            return vars_found
-    except Exception as e:
-        print(f"Error reading playbook: {e}")
-    return []
-
 def check_ansible_on_target(client):
     """Check if Ansible is installed on target"""
     try:
@@ -231,46 +210,6 @@ def check_playbooks_on_target(client):
     except:
         return False
 
-def execute_ansible_playbook(playbook_name, target_host, extra_vars=None):
-    """Execute Ansible playbook via SSH on target machine"""
-    try:
-        # Get the SSH client for the current session
-        session_id = session.get('ssh_id')
-        if not session_id or session_id not in active_ssh_sessions:
-            return None
-        
-        client = active_ssh_sessions[session_id]
-        
-        # Build the Ansible command to run on the target machine
-        # This assumes Ansible is installed on the target machine
-        cmd = f"cd /opt/go-ble-orchestrator && \
-                ansible-playbook -i inventory/production.yml \
-                playbooks/{playbook_name}.yml \
-                -l {target_host} -v"
-        
-        if extra_vars:
-            for key, value in extra_vars.items():
-                cmd += f" -e '{key}={value}'"
-        
-        print(f"[ANSIBLE] Executing via SSH: {cmd}")
-        
-        # Execute synchronously first to check if Ansible is available
-        test_cmd = "which ansible-playbook"
-        stdin, stdout, stderr = client.exec_command(test_cmd)
-        exit_code = stdout.channel.recv_exit_status()
-        
-        if exit_code != 0:
-            # Ansible not found on target machine, try running from control node
-            return None
-        
-        # Execute the actual playbook
-        stdin, stdout, stderr = client.exec_command(cmd, get_pty=True)
-        return stdout
-        
-    except Exception as e:
-        print(f"Error executing playbook: {e}")
-        return None
-
 # ============================================================================
 # HTML TEMPLATES
 # ============================================================================
@@ -283,11 +222,7 @@ BASE_TEMPLATE = """
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Orchestrator Manager</title>
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
         
         :root {
             --color-bg-dark: #0f0f1e;
@@ -309,10 +244,7 @@ BASE_TEMPLATE = """
             padding: 20px;
         }
         
-        .container {
-            max-width: 1400px;
-            margin: 0 auto;
-        }
+        .container { max-width: 1400px; margin: 0 auto; }
         
         .nav-bar {
             display: flex;
@@ -325,15 +257,8 @@ BASE_TEMPLATE = """
             border-radius: 12px;
         }
         
-        .nav-bar h1 {
-            font-size: 20px;
-            color: var(--color-primary);
-        }
-        
-        .nav-links {
-            display: flex;
-            gap: 10px;
-        }
+        .nav-bar h1 { font-size: 20px; color: var(--color-primary); }
+        .nav-links { display: flex; gap: 10px; flex-wrap: wrap; }
         
         .nav-btn {
             padding: 8px 14px;
@@ -347,11 +272,7 @@ BASE_TEMPLATE = """
             font-size: 12px;
             font-weight: 500;
         }
-        
-        .nav-btn:hover {
-            border-color: var(--color-primary);
-            color: var(--color-primary);
-        }
+        .nav-btn:hover { border-color: var(--color-primary); color: var(--color-primary); }
         
         .header {
             display: flex;
@@ -363,40 +284,13 @@ BASE_TEMPLATE = """
             border: 1px solid var(--color-border);
             border-radius: 12px;
         }
+        .header h2 { font-size: 24px; color: var(--color-primary); }
+        .header-stats { display: flex; gap: 20px; }
+        .stat { display: flex; flex-direction: column; align-items: center; }
+        .stat-value { font-size: 24px; font-weight: 700; color: var(--color-primary); }
+        .stat-label { font-size: 12px; color: var(--color-text-muted); }
         
-        .header h2 {
-            font-size: 24px;
-            color: var(--color-primary);
-        }
-        
-        .header-stats {
-            display: flex;
-            gap: 20px;
-        }
-        
-        .stat {
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-        }
-        
-        .stat-value {
-            font-size: 24px;
-            font-weight: 700;
-            color: var(--color-primary);
-        }
-        
-        .stat-label {
-            font-size: 12px;
-            color: var(--color-text-muted);
-        }
-        
-        .controls {
-            display: flex;
-            gap: 10px;
-            margin-bottom: 20px;
-            flex-wrap: wrap;
-        }
+        .controls { display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap; }
         
         .search-box {
             flex: 1;
@@ -407,11 +301,7 @@ BASE_TEMPLATE = """
             border-radius: 8px;
             color: var(--color-text);
         }
-        
-        .search-box:focus {
-            outline: none;
-            border-color: var(--color-primary);
-        }
+        .search-box:focus { outline: none; border-color: var(--color-primary); }
         
         .filter-btn {
             padding: 10px 14px;
@@ -424,16 +314,8 @@ BASE_TEMPLATE = """
             font-weight: 500;
             font-size: 12px;
         }
-        
-        .filter-btn:hover {
-            border-color: var(--color-primary);
-            color: var(--color-primary);
-        }
-        
-        .filter-btn.active {
-            background: var(--color-primary);
-            color: var(--color-bg-dark);
-        }
+        .filter-btn:hover { border-color: var(--color-primary); color: var(--color-primary); }
+        .filter-btn.active { background: var(--color-primary); color: var(--color-bg-dark); }
         
         .machines-grid {
             display: grid;
@@ -449,7 +331,6 @@ BASE_TEMPLATE = """
             padding: 20px;
             transition: all 0.3s ease;
         }
-        
         .machine-card:hover {
             border-color: var(--color-primary);
             transform: translateY(-4px);
@@ -464,52 +345,17 @@ BASE_TEMPLATE = """
             font-size: 12px;
             font-weight: 600;
         }
+        .status-indicator { width: 8px; height: 8px; border-radius: 50%; }
+        .status-online .status-indicator { background: var(--color-success); box-shadow: 0 0 4px var(--color-success); }
+        .status-offline .status-indicator { background: var(--color-danger); }
+        .status-online { color: var(--color-success); }
+        .status-offline { color: var(--color-danger); }
         
-        .status-indicator {
-            width: 8px;
-            height: 8px;
-            border-radius: 50%;
-        }
+        .machine-hostname { font-size: 18px; font-weight: 700; margin-bottom: 8px; }
         
-        .status-online .status-indicator {
-            background: var(--color-success);
-            box-shadow: 0 0 4px var(--color-success);
-        }
-        
-        .status-offline .status-indicator {
-            background: var(--color-danger);
-        }
-        
-        .status-online {
-            color: var(--color-success);
-        }
-        
-        .status-offline {
-            color: var(--color-danger);
-        }
-        
-        .machine-hostname {
-            font-size: 18px;
-            font-weight: 700;
-            margin-bottom: 8px;
-        }
-        
-        .detail-row {
-            display: flex;
-            justify-content: space-between;
-            font-size: 12px;
-            margin-bottom: 6px;
-        }
-        
-        .detail-label {
-            color: var(--color-text-muted);
-        }
-        
-        .detail-value {
-            color: var(--color-primary);
-            font-family: monospace;
-            font-weight: 600;
-        }
+        .detail-row { display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 6px; }
+        .detail-label { color: var(--color-text-muted); }
+        .detail-value { color: var(--color-primary); font-family: monospace; font-weight: 600; }
         
         .machine-actions {
             margin-top: 16px;
@@ -533,10 +379,7 @@ BASE_TEMPLATE = """
             text-decoration: none;
             text-align: center;
         }
-        
-        .action-btn:hover {
-            background: rgba(0, 215, 255, 0.2);
-        }
+        .action-btn:hover { background: rgba(0, 215, 255, 0.2); }
         
         .log-container {
             background: var(--color-card);
@@ -545,11 +388,7 @@ BASE_TEMPLATE = """
             padding: 20px;
             margin-bottom: 20px;
         }
-        
-        .log-container h3 {
-            margin-bottom: 15px;
-            color: var(--color-primary);
-        }
+        .log-container h3 { margin-bottom: 15px; color: var(--color-primary); }
         
         .log-list {
             list-style: none;
@@ -571,11 +410,7 @@ BASE_TEMPLATE = """
             transition: all 0.3s ease;
             display: block;
         }
-        
-        .log-item:hover {
-            background: rgba(0, 215, 255, 0.2);
-            transform: translateY(-2px);
-        }
+        .log-item:hover { background: rgba(0, 215, 255, 0.2); transform: translateY(-2px); }
         
         pre {
             background: #11111b;
@@ -584,26 +419,23 @@ BASE_TEMPLATE = """
             border-radius: 5px;
             overflow-x: auto;
             max-height: 700px;
+            overflow-y: auto;
             border: 1px solid var(--color-border);
             margin-bottom: 20px;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            line-height: 1.6;
+            white-space: pre-wrap;
+            word-break: break-all;
         }
         
-        .alert {
-            padding: 15px;
-            margin-bottom: 20px;
-            border-radius: 6px;
-            border: 1px solid;
-        }
-        
-        .alert-success {
-            background: rgba(16, 185, 129, 0.1);
-            border-color: var(--color-success);
-            color: var(--color-success);
-        }
+        .alert { padding: 15px; margin-bottom: 20px; border-radius: 6px; border: 1px solid; }
+        .alert-success { background: rgba(16, 185, 129, 0.1); border-color: var(--color-success); color: var(--color-success); }
         
         .back-link {
             display: inline-block;
             margin-bottom: 20px;
+            margin-right: 10px;
             padding: 8px 14px;
             background: var(--color-card);
             border: 1px solid var(--color-border);
@@ -613,10 +445,10 @@ BASE_TEMPLATE = """
             font-weight: 500;
             transition: all 0.3s ease;
         }
+        .back-link:hover { border-color: var(--color-primary); color: var(--color-primary); }
         
-        .back-link:hover {
-            border-color: var(--color-primary);
-            color: var(--color-primary);
+        input[type="datetime-local"] {
+            color-scheme: dark;
         }
     </style>
 </head>
@@ -648,26 +480,30 @@ BASE_TEMPLATE = """
 </html>
 """
 
+# ============================================================================
+# MACHINES TEMPLATE
+# ============================================================================
+
 MACHINES_TEMPLATE = BASE_TEMPLATE.replace('{% block content %}{% endblock %}', """
 <div id="loginModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); z-index: 1000; align-items: center; justify-content: center;">
     <div style="background: var(--color-card); border: 2px solid var(--color-primary); border-radius: 12px; padding: 30px; max-width: 400px; width: 90%;">
         <h3 style="color: var(--color-primary); margin-bottom: 20px;">🔐 SSH Login</h3>
-        <form id="loginForm">
+        <div id="loginForm">
             <input type="hidden" id="modalIp" name="ip">
             <input type="hidden" id="modalHostname" name="hostname">
             <div style="margin-bottom: 15px;">
                 <label style="color: var(--color-text-muted); font-size: 12px;">Username</label>
-                <input type="text" id="modalUsername" name="username" placeholder="ubuntu" required style="width: 100%; padding: 10px; background: var(--color-bg-dark); border: 1px solid var(--color-border); color: var(--color-text); border-radius: 6px; margin-top: 5px;">
+                <input type="text" id="modalUsername" placeholder="ubuntu" style="width: 100%; padding: 10px; background: var(--color-bg-dark); border: 1px solid var(--color-border); color: var(--color-text); border-radius: 6px; margin-top: 5px;">
             </div>
             <div style="margin-bottom: 20px;">
                 <label style="color: var(--color-text-muted); font-size: 12px;">Password</label>
-                <input type="password" id="modalPassword" name="password" placeholder="••••••••" required style="width: 100%; padding: 10px; background: var(--color-bg-dark); border: 1px solid var(--color-border); color: var(--color-text); border-radius: 6px; margin-top: 5px;">
+                <input type="password" id="modalPassword" placeholder="••••••••" style="width: 100%; padding: 10px; background: var(--color-bg-dark); border: 1px solid var(--color-border); color: var(--color-text); border-radius: 6px; margin-top: 5px;">
             </div>
             <div style="display: flex; gap: 10px;">
-                <button type="submit" class="action-btn" style="flex: 1; padding: 10px;">✓ Connect</button>
-                <button type="button" onclick="closeModal()" class="action-btn" style="flex: 1; padding: 10px; border-color: #ef4444; color: #ef4444;">✕ Cancel</button>
+                <button onclick="submitLogin()" class="action-btn" style="flex: 1; padding: 10px;">✓ Connect</button>
+                <button onclick="closeModal()" class="action-btn" style="flex: 1; padding: 10px; border-color: #ef4444; color: #ef4444;">✕ Cancel</button>
             </div>
-        </form>
+        </div>
     </div>
 </div>
 
@@ -702,9 +538,9 @@ MACHINES_TEMPLATE = BASE_TEMPLATE.replace('{% block content %}{% endblock %}', "
 
 <div class="controls">
     <input type="text" id="searchBox" class="search-box" placeholder="🔍 Search..." onkeyup="searchMachines()">
-    <button class="filter-btn active" onclick="filterMachines('all')">All</button>
-    <button class="filter-btn" onclick="filterMachines('online')">Online</button>
-    <button class="filter-btn" onclick="filterMachines('offline')">Offline</button>
+    <button class="filter-btn active" onclick="filterMachines('all', this)">All</button>
+    <button class="filter-btn" onclick="filterMachines('online', this)">Online</button>
+    <button class="filter-btn" onclick="filterMachines('offline', this)">Offline</button>
     <button class="filter-btn" onclick="location.reload()">🔄 Refresh</button>
 </div>
 
@@ -716,9 +552,7 @@ MACHINES_TEMPLATE = BASE_TEMPLATE.replace('{% block content %}{% endblock %}', "
                     <span class="status-indicator"></span>
                     {% if machine.online %}Online{% else %}Offline{% endif %}
                 </div>
-                
                 <div class="machine-hostname">{{ machine.hostname }}</div>
-                
                 <div class="machine-details">
                     <div class="detail-row">
                         <span class="detail-label">IP:</span>
@@ -729,7 +563,6 @@ MACHINES_TEMPLATE = BASE_TEMPLATE.replace('{% block content %}{% endblock %}', "
                         <span class="detail-value">{{ machine.os }}</span>
                     </div>
                 </div>
-                
                 <div class="machine-actions">
                     <button onclick="openLoginModal('{{ machine.ip }}', '{{ machine.hostname }}')" class="action-btn">🔐 Login</button>
                 </div>
@@ -744,21 +577,20 @@ MACHINES_TEMPLATE = BASE_TEMPLATE.replace('{% block content %}{% endblock %}', "
 </div>
 
 <script>
-    function filterMachines(status) {
+    function filterMachines(status, btn) {
         document.querySelectorAll('.machine-card').forEach(card => {
             if (status === 'all') card.style.display = '';
             else if (status === 'online') card.style.display = card.classList.contains('online') ? '' : 'none';
-            else if (status === 'offline') card.style.display = card.classList.contains('offline') ? '' : 'none';
+            else card.style.display = card.classList.contains('offline') ? '' : 'none';
         });
-        document.querySelectorAll('.filter-btn').forEach(btn => btn.classList.remove('active'));
-        event.target.classList.add('active');
+        document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+        if (btn) btn.classList.add('active');
     }
     
     function searchMachines() {
         const query = document.getElementById('searchBox').value.toLowerCase();
         document.querySelectorAll('.machine-card').forEach(card => {
-            const text = card.textContent.toLowerCase();
-            card.style.display = text.includes(query) ? '' : 'none';
+            card.style.display = card.textContent.toLowerCase().includes(query) ? '' : 'none';
         });
     }
     
@@ -768,6 +600,7 @@ MACHINES_TEMPLATE = BASE_TEMPLATE.replace('{% block content %}{% endblock %}', "
         document.getElementById('modalUsername').value = '';
         document.getElementById('modalPassword').value = '';
         document.getElementById('loginModal').style.display = 'flex';
+        setTimeout(() => document.getElementById('modalUsername').focus(), 100);
     }
     
     function closeModal() {
@@ -778,40 +611,49 @@ MACHINES_TEMPLATE = BASE_TEMPLATE.replace('{% block content %}{% endblock %}', "
         document.getElementById('messageModal').style.display = 'none';
     }
     
-    function showMessage(icon, title, text, isSuccess = false) {
+    function showMessage(icon, title, text, isSuccess) {
         document.getElementById('messageIcon').textContent = icon;
         document.getElementById('messageTitle').textContent = title;
+        document.getElementById('messageTitle').style.color = isSuccess ? '#10b981' : '#ef4444';
         document.getElementById('messageText').textContent = text;
-        if (isSuccess) {
-            document.getElementById('messageTitle').style.color = '#10b981';
-        } else {
-            document.getElementById('messageTitle').style.color = '#ef4444';
-        }
         document.getElementById('messageModal').style.display = 'flex';
     }
     
-    document.getElementById('loginForm').addEventListener('submit', async (e) => {
-        e.preventDefault();
+    async function submitLogin() {
         const ip = document.getElementById('modalIp').value;
         const username = document.getElementById('modalUsername').value;
         const password = document.getElementById('modalPassword').value;
         
+        if (!username) { alert('Username is required'); return; }
+        
         const response = await fetch('/login', {
             method: 'POST',
             headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-            body: `ip=${ip}&username=${username}&password=${password}`
+            body: `ip=${encodeURIComponent(ip)}&username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}`
         });
         
         const result = await response.json();
+        closeModal();
         if (result.success) {
             showMessage('✓', 'Connected!', `Successfully logged into ${ip}`, true);
-            setTimeout(() => window.location.href = '/dashboard', 2000);
+            setTimeout(() => window.location.href = '/dashboard', 1500);
         } else {
             showMessage('✗', 'Connection Failed', result.error || 'Check credentials and try again', false);
+        }
+    }
+    
+    // Allow Enter key in password field
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && document.getElementById('loginModal').style.display === 'flex') {
+            submitLogin();
         }
     });
 </script>
 """)
+
+# ============================================================================
+# DASHBOARD TEMPLATE
+# ============================================================================
 
 DASHBOARD_TEMPLATE = BASE_TEMPLATE.replace('{% block content %}{% endblock %}', """
 <div class="header">
@@ -821,6 +663,7 @@ DASHBOARD_TEMPLATE = BASE_TEMPLATE.replace('{% block content %}{% endblock %}', 
     </div>
 </div>
 
+<!-- Ansible Setup -->
 <div class="log-container">
     <h3>⚙️ Setup Ansible & Playbooks</h3>
     <p style="color: var(--color-text-muted); font-size: 12px; margin-bottom: 15px;">Prepare the target machine: install Ansible and copy playbooks to /tmp/ansible_deploy</p>
@@ -831,267 +674,117 @@ DASHBOARD_TEMPLATE = BASE_TEMPLATE.replace('{% block content %}{% endblock %}', 
     </div>
     
     <div id="setupStatus" style="background: rgba(0, 215, 255, 0.05); padding: 12px; border-radius: 6px; border: 1px solid var(--color-border); margin-bottom: 15px; display: none;">
-        <div style="font-size: 12px; color: var(--color-text-muted);">
-            <div id="statusLine" style="margin: 8px 0;">Checking status...</div>
-        </div>
+        <div id="statusLine" style="font-size: 12px; color: var(--color-text-muted);">Checking...</div>
     </div>
     
     <div id="setupOutput" style="display: none;">
         <h4 style="color: var(--color-primary); margin-bottom: 10px;">📊 Setup Output</h4>
-        <pre id="setupLog" style="height: 300px; margin-bottom: 15px; overflow-y: auto;">⏳ Waiting...</pre>
+        <pre id="setupLog" style="height: 300px;">⏳ Waiting...</pre>
     </div>
 </div>
 
+<!-- Ansible Playbook Runner -->
 <div class="log-container">
-    <h3>� Deploy with Ansible</h3>
+    <h3>🚀 Deploy with Ansible</h3>
     <p style="color: var(--color-text-muted); font-size: 12px; margin-bottom: 15px;">Select and run Ansible playbooks to deploy and configure the orchestrator</p>
-    <form id="ansibleForm" style="display: flex; gap: 10px; margin-bottom: 15px; flex-wrap: wrap;">
-        <select id="playbookSelect" required style="flex: 1; min-width: 150px; padding: 10px; background: var(--color-bg-dark); border: 1px solid var(--color-border); color: var(--color-text); border-radius: 6px;">
+    <div style="display: flex; gap: 10px; margin-bottom: 15px; flex-wrap: wrap;">
+        <select id="playbookSelect" style="flex: 1; min-width: 150px; padding: 10px; background: var(--color-bg-dark); border: 1px solid var(--color-border); color: var(--color-text); border-radius: 6px;">
             <option value="">📋 Select Playbook...</option>
             {% for playbook in playbooks %}
                 <option value="{{ playbook.name }}">{{ playbook.name }}</option>
             {% endfor %}
         </select>
-        <button type="submit" class="action-btn" style="padding: 10px 20px; min-width: 120px;">▶️ Run Playbook</button>
-    </form>
+        <button onclick="runPlaybook()" class="action-btn" style="padding: 10px 20px; min-width: 120px;">▶️ Run Playbook</button>
+    </div>
     
     <div id="ansibleOutput" style="display: none;">
         <h4 style="color: var(--color-primary); margin-bottom: 10px;">📊 Execution Output</h4>
-        <pre id="outputLog" style="height: 500px; margin-bottom: 15px;">⏳ Waiting to execute...</pre>
-        <div id="ansibleStatus" style="display: flex; gap: 10px; align-items: center; margin-bottom: 10px;">
-            <span id="statusIndicator" style="width: 12px; height: 12px; background: #f59e0b; border-radius: 50%; box-shadow: 0 0 6px #f59e0b;"></span>
+        <pre id="outputLog" style="height: 500px;">⏳ Waiting to execute...</pre>
+        <div style="display: flex; gap: 10px; align-items: center; margin-top: 10px;">
+            <span id="statusIndicator" style="width: 12px; height: 12px; background: #6b7280; border-radius: 50%;"></span>
             <span id="statusText" style="color: var(--color-text-muted);">Ready</span>
         </div>
     </div>
 </div>
 
+<!-- Standard Logs -->
 <div class="log-container">
-    <h3>📊 Standard Logs</h3>
-    <p style="color: var(--color-text-muted); font-size: 12px; margin-bottom: 12px;">View the last 1000 lines using <code style="background: #11111b; padding: 2px 6px; border-radius: 3px;">tail -n 1000</code></p>
+    <h3>📄 Standard Logs</h3>
+    <p style="color: var(--color-text-muted); font-size: 12px; margin-bottom: 12px;">
+        Click to view last 1000 lines &nbsp;|&nbsp; Click 📺 icon for live tail
+    </p>
+    {% if logs %}
     <ul class="log-list">
         {% for log in logs %}
-            <li><a href="{{ url_for('view_file', filename=log) }}" class="log-item">📄 {{ log }}</a></li>
+            <li style="display: flex; gap: 6px;">
+                <a href="{{ url_for('view_file', filename=log) }}" class="log-item" style="flex: 1;">📄 {{ log }}</a>
+                <a href="{{ url_for('live_tail', filename=log) }}" class="log-item" style="flex: 0; min-width: 44px; padding: 12px 8px;" title="Live Tail">📺</a>
+            </li>
         {% endfor %}
     </ul>
+    {% else %}
+    <p style="color: var(--color-text-muted); text-align: center; padding: 20px;">ℹ️ No .log files found in {{ log_dir }}</p>
+    {% endif %}
 </div>
 
+<!-- JSON / Gateway Logs -->
 <div class="log-container">
     <h3>📊 Gateway JSON Logs (json_logs/)</h3>
-    <p style="color: var(--color-text-muted); font-size: 12px; margin-bottom: 12px;">Search logs by date/time or stream in real-time</p>
+    <p style="color: var(--color-text-muted); font-size: 12px; margin-bottom: 12px;">Search by time range (epoch-based) or stream live</p>
     {% if gateway_files %}
-        <ul class="log-list">
-            {% for file in gateway_files %}
-                <li><a href="{{ url_for('view_gateway_file', filename=file) }}" class="log-item">📊 {{ file }}</a></li>
-            {% endfor %}
-        </ul>
+    <ul class="log-list">
+        {% for file in gateway_files %}
+            <li style="display: flex; gap: 6px;">
+                <a href="{{ url_for('view_gateway_file', filename=file) }}" class="log-item" style="flex: 1;">📊 {{ file }}</a>
+                <a href="{{ url_for('live_tail', filename='json_logs/' + file) }}" class="log-item" style="flex: 0; min-width: 44px; padding: 12px 8px;" title="Live Tail">📺</a>
+            </li>
+        {% endfor %}
+    </ul>
     {% else %}
-        <p style="color: var(--color-text-muted); text-align: center; padding: 20px;">ℹ️ No log files found in json_logs/</p>
+    <p style="color: var(--color-text-muted); text-align: center; padding: 20px;">ℹ️ No log files found in json_logs/</p>
     {% endif %}
 </div>
 
 <style>
-    @keyframes pulse-yellow {
-        0%, 100% { box-shadow: 0 0 6px #f59e0b; }
-        50% { box-shadow: 0 0 12px #f59e0b; }
-    }
-    #statusIndicator.running {
-        background: #f59e0b;
-        animation: pulse-yellow 1s infinite;
-    }
-    #statusIndicator.success {
-        background: #10b981;
-        box-shadow: 0 0 6px #10b981;
-    }
-    #statusIndicator.failed {
-        background: #ef4444;
-        box-shadow: 0 0 6px #ef4444;
-    }
+    @keyframes pulse-yellow { 0%, 100% { box-shadow: 0 0 6px #f59e0b; } 50% { box-shadow: 0 0 12px #f59e0b; } }
+    #statusIndicator.running { background: #f59e0b; animation: pulse-yellow 1s infinite; }
+    #statusIndicator.success { background: #10b981; box-shadow: 0 0 6px #10b981; }
+    #statusIndicator.failed { background: #ef4444; box-shadow: 0 0 6px #ef4444; }
 </style>
 
 <script>
-    // Initialize form handlers - check if elements exist before using them
-    const playbookSelect = document.getElementById('playbookSelect');
-    const ansibleForm = document.getElementById('ansibleForm');
-    const ansibleOutput = document.getElementById('ansibleOutput');
-    const outputLog = document.getElementById('outputLog');
-    const statusIndicator = document.getElementById('statusIndicator');
-    const statusText = document.getElementById('statusText');
-    
-    // Only attach event listener if form exists
-    if (ansibleForm) {
-        ansibleForm.addEventListener('submit', async (e) => {
-        e.preventDefault();
-        const playbook = playbookSelect.value;
-            console.log('[FORM] Submitted with playbook:', playbook);
-            
-            if (!playbook) {
-                console.warn('[WARNING] No playbook selected');
-                alert('Please select a playbook first');
-                return;
-            }
-            
-            // Verify output element exists
-            if (!ansibleOutput || !outputLog || !statusIndicator || !statusText) {
-                console.error('[ERROR] Missing output elements:', {ansibleOutput, outputLog, statusIndicator, statusText});
-                alert('Error: Output elements not found');
-                return;
-            }
-            
-            // Disable submit button while running
-            const submitBtn = ansibleForm.querySelector('button[type="submit"]');
-            if (!submitBtn) {
-                console.error('[ERROR] Submit button not found');
-                return;
-            }
-            const originalText = submitBtn.innerHTML;
-            submitBtn.disabled = true;
-            
-            ansibleOutput.style.display = 'block';
-            outputLog.innerHTML = '';
-            statusIndicator.className = 'running';
-            statusText.textContent = 'Initializing...';
-            console.log('[STREAM] Initiating stream to /ansible/stream');
-            
-            try {
-                const response = await fetch('/ansible/stream', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-                    body: `playbook=${playbook}`,
-                    credentials: 'same-origin'
-                });
-                console.log('[STREAM] Got response:', response.status, response.statusText);
-            while (true) {
-                const {done, value} = await reader.read();
-                if (done) break;
-                
-                const chunk = decoder.decode(value, {stream: true});
-                fullOutput += chunk;
-                
-                // Stream output line by line
-                const lines = chunk.split('\\n');
-                for (const line of lines) {
-                    if (line) {
-                        // Color code output based on content
-                        let styledLine = escapeHtml(line);
-                        
-                        if (line.includes('FAILED') || line.includes('fatal') || line.includes('[✗')) {
-                            outputLog.innerHTML += '<span style="color: #ef4444; font-weight: bold;">' + styledLine + '</span>\\n';
-                            statusIndicator.className = 'failed';
-                            statusText.textContent = 'Error detected...';
-                        } else if (line.includes('changed') || line.includes('ok:') || line.includes('[✓')) {
-                            outputLog.innerHTML += '<span style="color: #10b981;">' + styledLine + '</span>\\n';
-                        } else if (line.includes('TASK') || line.includes('PLAY')) {
-                            outputLog.innerHTML += '<span style="color: #00d7ff; font-weight: bold;">' + styledLine + '</span>\\n';
-                        } else if (line.includes('[INFO]')) {
-                            outputLog.innerHTML += '<span style="color: #f59e0b;">' + styledLine + '</span>\\n';
-                        } else if (line.includes('─')) {
-                            outputLog.innerHTML += '<span style="color: #4b5563;">' + styledLine + '</span>\\n';
-                        } else {
-                            outputLog.innerHTML += styledLine + '\\n';
-                        }
-                        outputLog.scrollTop = outputLog.scrollHeight;
-                    }
-                }
-            }
-            
-            // Determine final status
-            if (fullOutput.includes('[✓ SUCCESS]')) {
-                statusIndicator.className = 'success';
-                statusText.textContent = '✓ Completed Successfully';
-            } else if (fullOutput.includes('[✗ FAILED]') || fullOutput.includes('exit code: 1')) {
-                statusIndicator.className = 'failed';
-                statusText.textContent = '✗ Playbook Failed';
-            } else if (fullOutput.includes('[ERROR]')) {
-                statusIndicator.className = 'failed';
-                statusText.textContent = '✗ Error Occurred';
-            } else {
-                statusIndicator.className = 'success';
-                statusText.textContent = '✓ Completed';
-            }
-        } catch (error) {
-            outputLog.innerHTML += '\\n<span style="color: #ef4444;">[CLIENT ERROR] ' + escapeHtml(error.message) + '</span>';
-            statusIndicator.className = 'failed';
-            statusText.textContent = '✗ Execution Failed';
-        } finally {
-            submitBtn.disabled = false;
-            submitBtn.innerHTML = originalText;
-        }
-    });
-    } else {
-        console.warn('[WARNING] ansibleForm element not found');
-    }
-    
     function escapeHtml(text) {
-        const map = {
-            '&': '&amp;',
-            '<': '&lt;',
-            '>': '&gt;',
-            '"': '&quot;',
-            "'": '&#039;'
-        };
-        return text.replace(/[&<>"']/g, m => map[m]);
+        return text.replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]));
     }
-    
-    async function checkStatus() {
-        console.log('checkStatus() called');
-        const statusDiv = document.getElementById('setupStatus');
-        const statusLine = document.getElementById('statusLine');
+
+    async function runPlaybook() {
+        const playbook = document.getElementById('playbookSelect').value;
+        if (!playbook) { alert('Please select a playbook first'); return; }
         
-        if (!statusDiv || !statusLine) {
-            console.error('[ERROR] Setup status elements not found');
-            return;
-        }
+        const outputDiv = document.getElementById('ansibleOutput');
+        const outputLog = document.getElementById('outputLog');
+        const indicator = document.getElementById('statusIndicator');
+        const statusText = document.getElementById('statusText');
         
-        statusDiv.style.display = 'block';
-        statusLine.textContent = 'Checking status...';
+        outputDiv.style.display = 'block';
+        outputLog.innerHTML = '';
+        indicator.className = 'running';
+        statusText.textContent = 'Running...';
         
         try {
-            const response = await fetch('/ansible/status', {
-                method: 'GET',
-                credentials: 'same-origin'
-            });
-            console.log('Fetch response status:', response.status);
-            const result = await response.json();
-            console.log('Status result:', result);
-            
-            if (result.success) {
-                const ansible = result.ansible_installed ? '✓ Installed' : '✗ Not installed';
-                const playbooks = result.playbooks_copied ? '✓ Copied' : '✗ Not copied';
-                statusLine.innerHTML = `
-                    <strong>Ansible:</strong> ${ansible}<br>
-                    <strong>Playbooks:</strong> ${playbooks}<br>
-                    <strong>Location:</strong> /tmp/ansible_deploy
-                `;
-            } else {
-                statusLine.innerHTML = '<span style="color: #ef4444;">' + escapeHtml(result.error) + '</span>';
-            }
-        } catch (error) {
-            statusLine.innerHTML = '<span style="color: #ef4444;">Error checking status: ' + escapeHtml(error.message) + '</span>';
-        }
-    }
-    
-    async function setupMachine() {
-        console.log('setupMachine() called');
-        const setupOutput = document.getElementById('setupOutput');
-        const setupLog = document.getElementById('setupLog');
-        const statusDiv = document.getElementById('setupStatus');
-        
-        if (!setupOutput || !setupLog || !statusDiv) {
-            console.error('[ERROR] Setup output elements not found');
-            alert('Error: Setup UI elements not found. Refresh page and try again.');
-            return;
-        }
-        
-        setupOutput.style.display = 'block';
-        statusDiv.style.display = 'none';
-        setupLog.innerHTML = '⏳ Starting setup...\n';
-        
-        try {
-            const response = await fetch('/ansible/setup', { 
+            const response = await fetch('/ansible/stream', {
                 method: 'POST',
-                credentials: 'same-origin'
+                headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                body: `playbook=${encodeURIComponent(playbook)}`
             });
-            console.log('Setup response started, status:', response.status);
+            
+            if (!response.ok) {
+                outputLog.innerHTML = `<span style="color:#ef4444">HTTP Error: ${response.status}</span>`;
+                indicator.className = 'failed';
+                statusText.textContent = 'Request failed';
+                return;
+            }
+            
             const reader = response.body.getReader();
             const decoder = new TextDecoder();
             let fullOutput = '';
@@ -1099,143 +792,452 @@ DASHBOARD_TEMPLATE = BASE_TEMPLATE.replace('{% block content %}{% endblock %}', 
             while (true) {
                 const {done, value} = await reader.read();
                 if (done) break;
-                
                 const chunk = decoder.decode(value, {stream: true});
                 fullOutput += chunk;
                 
-                const lines = chunk.split('\n');
-                for (const line of lines) {
-                    if (line) {
-                        let styledLine = escapeHtml(line);
-                        
-                        if (line.includes('[✓') || line.includes('✓')) {
-                            setupLog.innerHTML += '<span style="color: #10b981;">' + styledLine + '</span>\n';
-                        } else if (line.includes('[✗') || line.includes('[ERROR]')) {
-                            setupLog.innerHTML += '<span style="color: #ef4444;">' + styledLine + '</span>\n';
-                        } else if (line.includes('[⚠️')) {
-                            setupLog.innerHTML += '<span style="color: #f59e0b;">' + styledLine + '</span>\n';
-                        } else if (line.includes('[INFO]')) {
-                            setupLog.innerHTML += '<span style="color: #f59e0b;">' + styledLine + '</span>\n';
-                        } else if (line.includes('Copied') || line.includes('Installed')) {
-                            setupLog.innerHTML += '<span style="color: #10b981;">' + styledLine + '</span>\n';
-                        } else if (line.includes('Contents')) {
-                            setupLog.innerHTML += '<span style="color: #a0a0b0; font-size: 11px;">' + styledLine + '</span>\n';
-                        } else {
-                            setupLog.innerHTML += styledLine + '\n';
-                        }
-                        setupLog.scrollTop = setupLog.scrollHeight;
+                chunk.split('\\n').forEach(line => {
+                    if (!line) return;
+                    let styled = escapeHtml(line);
+                    if (line.includes('FAILED') || line.includes('fatal') || line.includes('[✗')) {
+                        styled = `<span style="color:#ef4444;font-weight:bold">${styled}</span>`;
+                        indicator.className = 'failed';
+                    } else if (line.includes('changed') || line.includes('ok:') || line.includes('[✓')) {
+                        styled = `<span style="color:#10b981">${styled}</span>`;
+                    } else if (line.includes('TASK') || line.includes('PLAY')) {
+                        styled = `<span style="color:#00d7ff;font-weight:bold">${styled}</span>`;
+                    } else if (line.includes('[INFO]')) {
+                        styled = `<span style="color:#f59e0b">${styled}</span>`;
                     }
-                }
+                    outputLog.innerHTML += styled + '\\n';
+                    outputLog.scrollTop = outputLog.scrollHeight;
+                });
             }
             
-            // Auto-check status after setup
-            setTimeout(() => {
-                setupLog.innerHTML += '\n<span style="color: #f59e0b;">Checking final status...</span>\n';
-                checkStatus();
-            }, 1000);
+            if (fullOutput.includes('[✓ SUCCESS]')) {
+                indicator.className = 'success'; statusText.textContent = '✓ Completed Successfully';
+            } else if (fullOutput.includes('[✗ FAILED]') || fullOutput.includes('exit code: 1')) {
+                indicator.className = 'failed'; statusText.textContent = '✗ Playbook Failed';
+            } else {
+                indicator.className = 'success'; statusText.textContent = '✓ Done';
+            }
+        } catch (err) {
+            outputLog.innerHTML += `\\n<span style="color:#ef4444">[ERROR] ${escapeHtml(err.message)}</span>`;
+            indicator.className = 'failed';
+            statusText.textContent = '✗ Failed';
+        }
+    }
+    
+    async function checkStatus() {
+        const statusDiv = document.getElementById('setupStatus');
+        const statusLine = document.getElementById('statusLine');
+        statusDiv.style.display = 'block';
+        statusLine.textContent = 'Checking...';
+        
+        try {
+            const res = await fetch('/ansible/status');
+            const data = await res.json();
+            if (data.success) {
+                statusLine.innerHTML = `
+                    <strong>Ansible:</strong> ${data.ansible_installed ? '✓ Installed' : '✗ Not installed'}<br>
+                    <strong>Playbooks:</strong> ${data.playbooks_copied ? '✓ Copied to /tmp/ansible_deploy' : '✗ Not copied yet'}
+                `;
+            } else {
+                statusLine.innerHTML = `<span style="color:#ef4444">${escapeHtml(data.error)}</span>`;
+            }
+        } catch (err) {
+            statusLine.innerHTML = `<span style="color:#ef4444">Error: ${escapeHtml(err.message)}</span>`;
+        }
+    }
+    
+    async function setupMachine() {
+        const setupOutput = document.getElementById('setupOutput');
+        const setupLog = document.getElementById('setupLog');
+        setupOutput.style.display = 'block';
+        setupLog.innerHTML = '⏳ Starting setup...\\n';
+        
+        try {
+            const response = await fetch('/ansible/setup', { method: 'POST' });
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
             
-        } catch (error) {
-            setupLog.innerHTML += '\n<span style="color: #ef4444;">[ERROR] Setup failed: ' + escapeHtml(error.message) + '</span>';
+            while (true) {
+                const {done, value} = await reader.read();
+                if (done) break;
+                const chunk = decoder.decode(value, {stream: true});
+                chunk.split('\\n').forEach(line => {
+                    if (!line) return;
+                    let styled = escapeHtml(line);
+                    if (line.includes('✓') || line.includes('[✓')) styled = `<span style="color:#10b981">${styled}</span>`;
+                    else if (line.includes('✗') || line.includes('[ERROR]')) styled = `<span style="color:#ef4444">${styled}</span>`;
+                    else if (line.includes('⚠️') || line.includes('[INFO]')) styled = `<span style="color:#f59e0b">${styled}</span>`;
+                    setupLog.innerHTML += styled + '\\n';
+                    setupLog.scrollTop = setupLog.scrollHeight;
+                });
+            }
+            setTimeout(checkStatus, 500);
+        } catch (err) {
+            setupLog.innerHTML += `\\n<span style="color:#ef4444">[ERROR] ${escapeHtml(err.message)}</span>`;
         }
     }
 </script>
 """)
 
+# ============================================================================
+# VIEWER TEMPLATE (standard logs)
+# ============================================================================
+
 VIEWER_TEMPLATE = BASE_TEMPLATE.replace('{% block content %}{% endblock %}', """
-<a href="{{ url_for('machines') }}" class="back-link">← Back to Machines</a>
-<a href="{{ url_for('dashboard') }}" class="back-link">← Back to Logs</a>
+<a href="{{ url_for('dashboard') }}" class="back-link">← Back to Dashboard</a>
+<a href="{{ url_for('live_tail', filename=filename) }}" class="back-link" style="border-color: var(--color-primary); color: var(--color-primary);">📺 Live Tail</a>
 
 <div class="log-container">
-    <h3>📄 {{ title }}</h3>
-    <div style="background: rgba(0, 215, 255, 0.05); padding: 12px; border-radius: 6px; margin-bottom: 15px; border: 1px solid var(--color-border);">
-        <span style="color: var(--color-text-muted); font-size: 12px;">📍 Command: </span>
-        <code style="background: #11111b; padding: 4px 8px; border-radius: 4px; color: #10b981; font-family: monospace;">cat {{ title }}</code>
+    <h3>📄 {{ filename }}</h3>
+    <div style="background: rgba(0, 215, 255, 0.05); padding: 12px; border-radius: 6px; margin-bottom: 15px; border: 1px solid var(--color-border); font-size: 12px; color: var(--color-text-muted);">
+        Showing last 1000 lines &nbsp;|&nbsp; Path: <code style="background: #11111b; padding: 2px 6px; border-radius: 3px; color: #10b981;">{{ log_dir }}/{{ filename }}</code>
     </div>
-    <pre>{{ content }}</pre>
+    {% if error %}
+        <div class="alert" style="border-color: var(--color-danger); background: rgba(239,68,68,0.1); color: var(--color-danger);">
+            ⚠️ {{ error }}
+        </div>
+    {% endif %}
+    <pre id="logContent">{{ content }}</pre>
 </div>
+
+<script>
+    // Auto scroll to bottom
+    const el = document.getElementById('logContent');
+    if (el) el.scrollTop = el.scrollHeight;
+</script>
 """)
+
+# ============================================================================
+# GATEWAY / JSON LOG TEMPLATE
+# ============================================================================
 
 GATEWAY_TEMPLATE = BASE_TEMPLATE.replace('{% block content %}{% endblock %}', """
 <a href="{{ url_for('dashboard') }}" class="back-link">← Back to Dashboard</a>
+<a href="{{ url_for('live_tail', filename='json_logs/' + filename) }}" class="back-link" style="border-color: var(--color-primary); color: var(--color-primary);">📺 Live Tail</a>
 
 <div class="log-container">
     <h3>📊 Gateway Log: {{ filename }}</h3>
-    <p style="color: var(--color-text-muted); margin-bottom: 20px;">Path: <code style="background: #11111b; padding: 4px 8px; border-radius: 4px;">{{ log_dir }}/json_logs/{{ filename }}</code></p>
+    <p style="color: var(--color-text-muted); margin-bottom: 20px; font-size: 12px;">
+        Path: <code style="background: #11111b; padding: 4px 8px; border-radius: 4px;">{{ log_dir }}/json_logs/{{ filename }}</code>
+    </p>
     
-    <form method="GET" action="{{ url_for('view_json_timestamp', filename=filename) }}" style="display: flex; flex-direction: column; gap: 15px; margin-bottom: 20px;">
-        <div style="display: flex; gap: 10px; flex-wrap: wrap;">
-            <div style="flex: 1; min-width: 200px;">
-                <label style="color: var(--color-text-muted); font-size: 12px; display: block; margin-bottom: 8px;">📅 Select Date & Time</label>
-                <input type="datetime-local" name="timestamp" required style="width: 100%; padding: 12px; background: var(--color-bg-dark); border: 1px solid var(--color-border); color: var(--color-text); border-radius: 6px; font-size: 14px;">
+    <!-- Time Range Search -->
+    <div style="background: rgba(0, 215, 255, 0.05); padding: 20px; border-radius: 8px; border: 1px solid var(--color-border); margin-bottom: 20px;">
+        <h4 style="color: var(--color-primary); margin-bottom: 15px;">🕐 Search by Time Range</h4>
+        <p style="color: var(--color-text-muted); font-size: 12px; margin-bottom: 15px;">
+            Searches the <code style="background: #11111b; padding: 2px 4px; border-radius: 3px;">timestamp</code> field (milliseconds epoch) in each JSON line.
+        </p>
+        
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 15px;">
+            <div>
+                <label style="color: var(--color-text-muted); font-size: 12px; display: block; margin-bottom: 6px;">📅 From (local time)</label>
+                <input type="datetime-local" id="fromTime" style="width: 100%; padding: 10px; background: var(--color-bg-dark); border: 1px solid var(--color-border); color: var(--color-text); border-radius: 6px;">
             </div>
-            <div style="display: flex; gap: 10px; align-items: flex-end;">
-                <button type="submit" class="action-btn" style="padding: 10px 20px; min-width: 120px;">🔍 Search Logs</button>
-                <a href="{{ url_for('live_tail', filename='json_logs/' + filename) }}" class="action-btn" style="padding: 10px 20px; min-width: 120px; text-align: center; text-decoration: none;">📺 Live Tail</a>
+            <div>
+                <label style="color: var(--color-text-muted); font-size: 12px; display: block; margin-bottom: 6px;">📅 To (local time)</label>
+                <input type="datetime-local" id="toTime" style="width: 100%; padding: 10px; background: var(--color-bg-dark); border: 1px solid var(--color-border); color: var(--color-text); border-radius: 6px;">
             </div>
         </div>
-    </form>
+        
+        <div id="epochPreview" style="font-size: 11px; color: var(--color-text-muted); margin-bottom: 15px; font-family: monospace; min-height: 18px;"></div>
+        
+        <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+            <button onclick="searchByTimeRange()" class="action-btn" style="padding: 10px 24px; min-width: 140px;">🔍 Search</button>
+            <button onclick="setLastN(15)" class="action-btn" style="padding: 10px 16px; min-width: 100px;">Last 15 min</button>
+            <button onclick="setLastN(60)" class="action-btn" style="padding: 10px 16px; min-width: 100px;">Last 1 hour</button>
+            <button onclick="setLastN(360)" class="action-btn" style="padding: 10px 16px; min-width: 100px;">Last 6 hours</button>
+        </div>
+    </div>
+    
+    <!-- Results -->
+    <div id="searchResults" style="display: none;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+            <h4 style="color: var(--color-primary);">📋 Results <span id="resultCount" style="font-size: 12px; color: var(--color-text-muted);"></span></h4>
+            <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--color-text-muted); cursor: pointer;">
+                <input type="checkbox" id="prettyJson" onchange="togglePretty()"> Pretty-print JSON
+            </label>
+        </div>
+        <pre id="resultsLog" style="height: 600px;"></pre>
+    </div>
+    
+    <div id="searchLoading" style="display: none; text-align: center; padding: 30px; color: var(--color-text-muted);">
+        <div style="font-size: 32px; margin-bottom: 10px;">⏳</div>
+        <div>Searching logs...</div>
+    </div>
 </div>
+
+<script>
+    const filename = {{ filename | tojson }};
+    let rawLines = [];
+    
+    // Update epoch preview when times change
+    ['fromTime', 'toTime'].forEach(id => {
+        document.getElementById(id).addEventListener('change', updateEpochPreview);
+    });
+    
+    function updateEpochPreview() {
+        const from = document.getElementById('fromTime').value;
+        const to = document.getElementById('toTime').value;
+        const preview = document.getElementById('epochPreview');
+        if (from && to) {
+            const fromEpoch = new Date(from).getTime();
+            const toEpoch = new Date(to).getTime();
+            preview.textContent = `Epoch range: ${fromEpoch} ms → ${toEpoch} ms`;
+        } else if (from) {
+            preview.textContent = `From epoch: ${new Date(from).getTime()} ms`;
+        } else {
+            preview.textContent = '';
+        }
+    }
+    
+    function setLastN(minutes) {
+        const now = new Date();
+        const past = new Date(now.getTime() - minutes * 60 * 1000);
+        // Format for datetime-local input (YYYY-MM-DDTHH:mm)
+        document.getElementById('fromTime').value = toLocalInputValue(past);
+        document.getElementById('toTime').value = toLocalInputValue(now);
+        updateEpochPreview();
+    }
+    
+    function toLocalInputValue(date) {
+        // datetime-local needs local time without timezone offset
+        const off = date.getTimezoneOffset() * 60000;
+        return new Date(date.getTime() - off).toISOString().slice(0, 16);
+    }
+    
+    async function searchByTimeRange() {
+        const from = document.getElementById('fromTime').value;
+        const to = document.getElementById('toTime').value;
+        
+        if (!from || !to) { alert('Please select both From and To times'); return; }
+        
+        const fromEpoch = new Date(from).getTime();
+        const toEpoch = new Date(to).getTime();
+        
+        if (fromEpoch >= toEpoch) { alert('From time must be before To time'); return; }
+        
+        document.getElementById('searchLoading').style.display = 'block';
+        document.getElementById('searchResults').style.display = 'none';
+        
+        try {
+            const res = await fetch(`/gateway/${encodeURIComponent(filename)}/search`, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                body: `from_epoch=${fromEpoch}&to_epoch=${toEpoch}`
+            });
+            const data = await res.json();
+            
+            document.getElementById('searchLoading').style.display = 'none';
+            document.getElementById('searchResults').style.display = 'block';
+            
+            if (data.error) {
+                document.getElementById('resultsLog').innerHTML = `<span style="color:#ef4444">${escapeHtml(data.error)}</span>`;
+                document.getElementById('resultCount').textContent = '';
+                return;
+            }
+            
+            rawLines = data.lines || [];
+            document.getElementById('resultCount').textContent = `(${rawLines.length} records found)`;
+            renderResults();
+            
+        } catch (err) {
+            document.getElementById('searchLoading').style.display = 'none';
+            document.getElementById('searchResults').style.display = 'block';
+            document.getElementById('resultsLog').innerHTML = `<span style="color:#ef4444">Error: ${escapeHtml(err.message)}</span>`;
+        }
+    }
+    
+    function togglePretty() {
+        renderResults();
+    }
+    
+    function renderResults() {
+        const pretty = document.getElementById('prettyJson').checked;
+        const el = document.getElementById('resultsLog');
+        
+        if (rawLines.length === 0) {
+            el.innerHTML = '<span style="color: var(--color-text-muted);">No records found in this time range.</span>';
+            return;
+        }
+        
+        let html = '';
+        rawLines.forEach((line, i) => {
+            if (!line.trim()) return;
+            if (pretty) {
+                try {
+                    const obj = JSON.parse(line);
+                    const ts = obj.timestamp || obj.timestamp1;
+                    const tsDisplay = ts ? new Date(ts > 1e12 ? ts : ts * 1000).toLocaleString() : '';
+                    html += `<span style="color:#4b5563; font-size:11px;">─── Record ${i+1}${tsDisplay ? ' · ' + tsDisplay : ''} ───</span>\\n`;
+                    html += escapeHtml(JSON.stringify(obj, null, 2)) + '\\n\\n';
+                } catch {
+                    html += escapeHtml(line) + '\\n';
+                }
+            } else {
+                html += escapeHtml(line) + '\\n';
+            }
+        });
+        
+        el.innerHTML = html;
+        el.scrollTop = 0;
+    }
+    
+    function escapeHtml(text) {
+        return String(text).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]));
+    }
+</script>
 """)
 
+# ============================================================================
+# LIVE TAIL TEMPLATE
+# ============================================================================
 
 LIVE_TAIL_TEMPLATE = BASE_TEMPLATE.replace('{% block content %}{% endblock %}', """
-<a href="{{ url_for('dashboard') }}" class="back-link">← Back to Logs</a>
+<a href="{{ url_for('dashboard') }}" class="back-link">← Back to Dashboard</a>
 
 <div class="log-container">
     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
-        <h3>📺 Live Tail: {{ title }}</h3>
+        <h3>📺 Live Tail: {{ filename }}</h3>
         <div style="display: flex; align-items: center; gap: 10px;">
-            <span id="liveIndicator" style="width: 12px; height: 12px; background: #10b981; border-radius: 50%; box-shadow: 0 0 6px #10b981;"></span>
-            <span style="color: var(--color-text-muted); font-size: 12px;">Live Streaming</span>
+            <span id="liveIndicator" style="width: 12px; height: 12px; background: #f59e0b; border-radius: 50%;"></span>
+            <span id="liveStatus" style="color: var(--color-text-muted); font-size: 12px;">Connecting...</span>
+            <button onclick="clearLog()" class="action-btn" style="padding: 4px 10px; font-size: 11px;">🗑 Clear</button>
+            <button onclick="togglePause()" id="pauseBtn" class="action-btn" style="padding: 4px 10px; font-size: 11px;">⏸ Pause</button>
         </div>
     </div>
-    <pre id="logOutput" style="height: 600px; overflow-y: auto;">⏳ Connecting to live stream...</pre>
+    
+    <div style="font-size: 11px; color: var(--color-text-muted); margin-bottom: 10px;">
+        Lines received: <span id="lineCount">0</span> &nbsp;|&nbsp; 
+        Path: <code style="background: #11111b; padding: 2px 4px; border-radius: 3px;">{{ log_dir }}/{{ filename }}</code>
+    </div>
+    
+    <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 10px;">
+        <label style="font-size: 12px; color: var(--color-text-muted);">
+            <input type="checkbox" id="prettyJson" onchange="togglePretty()"> Pretty-print JSON
+        </label>
+        <label style="font-size: 12px; color: var(--color-text-muted);">
+            <input type="checkbox" id="autoScroll" checked> Auto-scroll
+        </label>
+        <input type="text" id="filterInput" placeholder="Filter lines..." 
+               style="padding: 4px 10px; background: var(--color-bg-dark); border: 1px solid var(--color-border); color: var(--color-text); border-radius: 4px; font-size: 12px;"
+               oninput="applyFilter()">
+    </div>
+    
+    <pre id="logOutput" style="height: 650px;">⏳ Connecting to live stream...</pre>
 </div>
 
 <style>
-    @keyframes pulse {
-        0%, 100% { box-shadow: 0 0 6px #10b981; }
-        50% { box-shadow: 0 0 12px #10b981; }
-    }
-    #liveIndicator.connecting {
-        animation: pulse 1s infinite;
-    }
-    #liveIndicator.error {
-        background: #ef4444;
-        box-shadow: 0 0 6px #ef4444;
-    }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+    #liveIndicator.live { background: #10b981; box-shadow: 0 0 6px #10b981; animation: pulse 2s infinite; }
+    #liveIndicator.error { background: #ef4444; box-shadow: 0 0 6px #ef4444; }
+    #liveIndicator.paused { background: #f59e0b; box-shadow: 0 0 6px #f59e0b; }
 </style>
 
 <script>
-    const logWindow = document.getElementById("logOutput");
-    const liveIndicator = document.getElementById("liveIndicator");
+    const logOutput = document.getElementById('logOutput');
+    const indicator = document.getElementById('liveIndicator');
+    const liveStatus = document.getElementById('liveStatus');
+    const lineCountEl = document.getElementById('lineCount');
+    
     let lineCount = 0;
+    let paused = false;
+    let allLines = [];
+    let filterText = '';
+    let isPretty = false;
     
     const evtSource = new EventSource("{{ url_for('stream_tail', filename=filename) }}");
     
     evtSource.onopen = () => {
-        logWindow.innerHTML = '';
-        liveIndicator.classList.remove('connecting', 'error');
-        liveIndicator.classList.add('connecting');
+        logOutput.innerHTML = '';
+        indicator.className = 'live';
+        liveStatus.textContent = 'Live';
     };
     
     evtSource.onmessage = e => {
-        liveIndicator.classList.remove('connecting', 'error');
-        logWindow.innerHTML += e.data + "\\n";
-        logWindow.scrollTop = logWindow.scrollHeight;
+        if (paused) return;
+        const line = e.data;
+        allLines.push(line);
         lineCount++;
+        lineCountEl.textContent = lineCount;
+        
+        if (!filterText || line.toLowerCase().includes(filterText)) {
+            appendLine(line);
+        }
+        
+        if (document.getElementById('autoScroll').checked) {
+            logOutput.scrollTop = logOutput.scrollHeight;
+        }
     };
     
     evtSource.onerror = () => {
-        liveIndicator.classList.remove('connecting');
-        liveIndicator.classList.add('error');
-        logWindow.innerHTML += "\\n\\n[Stream Closed] Total lines received: " + lineCount;
+        indicator.className = 'error';
+        liveStatus.textContent = 'Disconnected';
+        logOutput.innerHTML += '\\n\\n[Stream closed. Total lines: ' + lineCount + ']';
         evtSource.close();
     };
     
-    window.addEventListener('beforeunload', () => {
-        evtSource.close();
-    });
+    function appendLine(line) {
+        if (isPretty) {
+            try {
+                const obj = JSON.parse(line);
+                const ts = obj.timestamp || obj.timestamp1;
+                const tsStr = ts ? new Date(ts > 1e12 ? ts : ts * 1000).toLocaleTimeString() : '';
+                logOutput.innerHTML += `<span style="color:#4b5563;font-size:10px;">──── ${tsStr} ────</span>\\n`;
+                logOutput.innerHTML += escapeHtml(JSON.stringify(obj, null, 2)) + '\\n\\n';
+            } catch {
+                logOutput.innerHTML += escapeHtml(line) + '\\n';
+            }
+        } else {
+            logOutput.innerHTML += escapeHtml(line) + '\\n';
+        }
+    }
+    
+    function clearLog() {
+        logOutput.innerHTML = '';
+        allLines = [];
+        lineCount = 0;
+        lineCountEl.textContent = '0';
+    }
+    
+    function togglePause() {
+        paused = !paused;
+        const btn = document.getElementById('pauseBtn');
+        if (paused) {
+            btn.textContent = '▶ Resume';
+            indicator.className = 'paused';
+            liveStatus.textContent = 'Paused';
+        } else {
+            btn.textContent = '⏸ Pause';
+            indicator.className = 'live';
+            liveStatus.textContent = 'Live';
+        }
+    }
+    
+    function togglePretty() {
+        isPretty = document.getElementById('prettyJson').checked;
+        // Re-render all lines
+        logOutput.innerHTML = '';
+        allLines.forEach(line => {
+            if (!filterText || line.toLowerCase().includes(filterText)) appendLine(line);
+        });
+    }
+    
+    function applyFilter() {
+        filterText = document.getElementById('filterInput').value.toLowerCase();
+        logOutput.innerHTML = '';
+        allLines.forEach(line => {
+            if (!filterText || line.toLowerCase().includes(filterText)) appendLine(line);
+        });
+    }
+    
+    function escapeHtml(text) {
+        return String(text).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]));
+    }
+    
+    window.addEventListener('beforeunload', () => evtSource.close());
 </script>
 """)
 
@@ -1260,19 +1262,17 @@ def machines():
 
 @app.route('/login', methods=['POST'])
 def login():
-    ip = request.form['ip']
-    username = request.form['username']
-    password = request.form['password']
+    ip = request.form.get('ip', '')
+    username = request.form.get('username', '')
+    password = request.form.get('password', '')
 
     client = paramiko.SSHClient()
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     
     try:
         if password:
-            # Try password first if the user typed one
             client.connect(hostname=ip, username=username, password=password, timeout=10)
         else:
-            # If no password, tell Paramiko to use your local ~/.ssh/ keys
             client.connect(hostname=ip, username=username, timeout=10, look_for_keys=True)
             
         session_id = str(uuid.uuid4())
@@ -1281,7 +1281,7 @@ def login():
         session['target_ip'] = ip
         return jsonify({"success": True, "message": f"Connected to {ip}"})
     except paramiko.AuthenticationException:
-        return jsonify({"success": False, "error": "Authentication failed. Check password or ensure your SSH key is authorized on the node."})
+        return jsonify({"success": False, "error": "Authentication failed. Check credentials or SSH key authorization."})
     except Exception as e:
         return jsonify({"success": False, "error": f"SSH failed: {str(e)}"})
 
@@ -1303,24 +1303,47 @@ def dashboard():
         flash("Please login first")
         return redirect(url_for('machines'))
 
-    # Get available playbooks
     playbooks = get_playbooks()
     
-    # DYNAMICALLY fetch the main logs (no more hardcoding)
+    # Get standard .log files
     out_base, err_base = execute_ssh(f"ls -1 {LOG_DIR}/*.log 2>/dev/null")
-    target_logs = [f.strip().split('/')[-1] for f in (out_base or '').split('\n') if f.strip().endswith('.log')]
+    target_logs = []
+    if out_base:
+        target_logs = [f.strip().split('/')[-1] for f in out_base.split('\n') if f.strip().endswith('.log')]
 
-    # Fetch the json_logs
-    out_json, err_json = execute_ssh(f"ls -1 {LOG_DIR}/json_logs/*.log 2>/dev/null")
-    gateway_files = [f.strip().split('/')[-1] for f in (out_json or '').split('\n') if f.strip().endswith('.log')]
+    # Get json_logs files
+    out_json, err_json = execute_ssh(f"ls -1 {LOG_DIR}/json_logs/*.log 2>/dev/null || ls -1 {LOG_DIR}/json_logs/*.json 2>/dev/null")
+    gateway_files = []
+    if out_json:
+        gateway_files = [f.strip().split('/')[-1] for f in out_json.split('\n') if f.strip()]
 
-    return render_template_string(DASHBOARD_TEMPLATE, target_ip=session.get('target_ip'), logs=target_logs, gateway_files=gateway_files, playbooks=playbooks)
+    return render_template_string(
+        DASHBOARD_TEMPLATE,
+        target_ip=session.get('target_ip'),
+        logs=target_logs,
+        gateway_files=gateway_files,
+        playbooks=playbooks,
+        log_dir=LOG_DIR
+    )
+
 @app.route('/view/<path:filename>')
 def view_file(filename):
     if 'ssh_id' not in session:
         return redirect(url_for('machines'))
-    out, err = execute_ssh(f"tail -n 1000 {LOG_DIR}/{filename}")
-    return render_template_string(VIEWER_TEMPLATE, title=filename, content=out or err or "No logs")
+    
+    # Sanitize filename to prevent path traversal
+    safe_filename = filename.replace('..', '').lstrip('/')
+    full_path = f"{LOG_DIR}/{safe_filename}"
+    
+    out, err = execute_ssh(f"tail -n 1000 {full_path} 2>&1")
+    
+    return render_template_string(
+        VIEWER_TEMPLATE,
+        filename=safe_filename,
+        content=out or '',
+        error=err if not out else None,
+        log_dir=LOG_DIR
+    )
 
 @app.route('/gateway/<filename>')
 def view_gateway_file(filename):
@@ -1328,288 +1351,242 @@ def view_gateway_file(filename):
         return redirect(url_for('machines'))
     return render_template_string(GATEWAY_TEMPLATE, filename=filename, log_dir=LOG_DIR)
 
-@app.route('/gateway/<filename>/search')
-def view_json_timestamp(filename):
+@app.route('/gateway/<filename>/search', methods=['POST'])
+def search_gateway_json(filename):
+    """Search JSON log by epoch time range. JSON lines must have a 'timestamp' field in ms."""
     if 'ssh_id' not in session:
-        return redirect(url_for('machines'))
-    timestamp_raw = request.args.get('timestamp', '').replace('T', ' ')
+        return jsonify({"error": "Not authenticated"}), 401
     
-    # Use grep to find lines with timestamp, then use awk to extract context
-    # This searches for the timestamp in various common log formats
-    cmd = f"grep -n '{timestamp_raw}' {LOG_DIR}/json_logs/{filename} | head -50 || echo 'No matches found for timestamp: {timestamp_raw}'"
+    try:
+        from_epoch = int(request.form.get('from_epoch', 0))
+        to_epoch = int(request.form.get('to_epoch', 0))
+    except (ValueError, TypeError):
+        return jsonify({"error": "Invalid epoch values"}), 400
     
-    out, err = execute_ssh(cmd)
-    return render_template_string(VIEWER_TEMPLATE, title=f"{filename} @ {timestamp_raw}", content=out or err or "No logs found for this timestamp")
+    if from_epoch <= 0 or to_epoch <= 0 or from_epoch >= to_epoch:
+        return jsonify({"error": "Invalid time range"}), 400
+    
+    safe_filename = filename.replace('..', '').lstrip('/')
+    log_path = f"{LOG_DIR}/json_logs/{safe_filename}"
+    
+    # Python one-liner on the remote machine:
+    # Read each line, parse JSON, check if timestamp (ms) is in range, print matching lines.
+    # Handles both ms-epoch (>1e12) and s-epoch fields.
+    python_cmd = (
+        f"python3 -c \""
+        f"import sys, json; "
+        f"f=open('{log_path}'); "
+        f"[print(l.rstrip()) for l in f "
+        f"if (lambda t: t is not None and {from_epoch} <= (t if t > 1e12 else t*1000) <= {to_epoch})"
+        f"((lambda o: o.get('timestamp') or o.get('timestamp1'))"
+        f"(json.loads(l) if l.strip() else {{}}))"
+        f"] ; f.close()"
+        f"\" 2>&1 || echo 'ERROR: Could not read file'"
+    )
+    
+    out, err = execute_ssh(python_cmd)
+    
+    if err and not out:
+        return jsonify({"error": f"SSH error: {err}"}), 500
+    
+    lines = [l for l in (out or '').split('\n') if l.strip()]
+    
+    # Check for error output
+    if len(lines) == 1 and lines[0].startswith('ERROR:'):
+        return jsonify({"error": lines[0]}), 500
+    
+    return jsonify({
+        "lines": lines,
+        "count": len(lines),
+        "from_epoch": from_epoch,
+        "to_epoch": to_epoch
+    })
 
 @app.route('/live_tail/<path:filename>')
 def live_tail(filename):
     if 'ssh_id' not in session:
         return redirect(url_for('machines'))
-    return render_template_string(LIVE_TAIL_TEMPLATE, title=filename, filename=filename)
+    return render_template_string(LIVE_TAIL_TEMPLATE, filename=filename, log_dir=LOG_DIR)
 
 @app.route('/stream/<path:filename>')
 def stream_tail(filename):
-    # Capture session values now to avoid referencing Flask `session` in generator
+    """SSE endpoint: streams tail -f output as server-sent events."""
     session_id = session.get('ssh_id')
     client = active_ssh_sessions.get(session_id)
+    
+    safe_filename = filename.replace('..', '').lstrip('/')
+    full_path = f"{LOG_DIR}/{safe_filename}"
 
     def generate():
         if not client:
             yield "data: [ERROR] Session expired. Please reconnect.\n\n"
             return
         try:
-            # Use tail -f to stream real-time logs
-            stdin, stdout, stderr = client.exec_command(f"tail -n 50 -f {LOG_DIR}/{filename}", get_pty=True)
+            # First send last 50 lines, then follow
+            stdin, stdout, stderr = client.exec_command(
+                f"tail -n 50 -f {full_path} 2>&1",
+                get_pty=True
+            )
             for line in iter(stdout.readline, ""):
                 if line:
                     yield f"data: {line.rstrip()}\n\n"
         except Exception as e:
             yield f"data: [ERROR] {str(e)}\n\n"
 
-    return Response(generate(), mimetype='text/event-stream')
+    return Response(generate(), mimetype='text/event-stream',
+                    headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
+
+# ============================================================================
+# ANSIBLE ROUTES
+# ============================================================================
 
 @app.route('/ansible/stream', methods=['POST'])
 def ansible_stream():
-    """Execute Ansible playbook via SSH on target machine and stream output"""
     playbook = request.form.get('playbook', '')
-    target_ip = session.get('target_ip', '')
     session_id = session.get('ssh_id', '')
     
-    if not playbook or not target_ip or not session_id:
-        return Response("ERROR: Missing playbook, target IP, or SSH session\n", mimetype='text/plain')
+    if not playbook or not session_id:
+        return Response("ERROR: Missing playbook or SSH session\n", mimetype='text/plain')
     
-    # Verify SSH session exists and capture client NOW
     if session_id not in active_ssh_sessions:
         return Response("ERROR: SSH session not found. Please log back in.\n", mimetype='text/plain')
     
     client = active_ssh_sessions.get(session_id)
-    if not client:
-        return Response("ERROR: Cannot access SSH client\n", mimetype='text/plain')
     
     def generate():
         try:
-            # Step 1: Check if playbook file exists in /tmp/ansible_deploy
-            yield "[INFO] Checking for playbooks in /tmp/ansible_deploy...\n"
+            yield f"[INFO] Checking for playbook: {playbook}.yml in /tmp/ansible_deploy...\n"
             stdin, stdout, stderr = client.exec_command(f'ls /tmp/ansible_deploy/{playbook}.yml 2>/dev/null')
             check_code = stdout.channel.recv_exit_status()
             
             if check_code != 0:
-                yield "[✗ ERROR] Playbook '{playbook}.yml' not found in /tmp/ansible_deploy\n"
-                yield "[INFO] Please use 'Copy Playbooks' button to transfer them to this machine first.\n"
+                yield f"[✗ ERROR] Playbook '{playbook}.yml' not found in /tmp/ansible_deploy\n"
+                yield "[INFO] Use 'Copy & Install' button to transfer playbooks first.\n"
                 return
             
-            yield "[✓ OK] Playbook found locally\n\n"
+            yield "[✓ OK] Playbook found\n\n"
             
-            # Step 2: Check if Ansible is installed
-            yield "[INFO] Checking Ansible installation...\n"
-            stdin, stdout, stderr = client.exec_command('which ansible-playbook', get_pty=True)
-            check_code = stdout.channel.recv_exit_status()
-            
-            if check_code != 0:
-                yield "[⚠️  WARNING] Ansible not installed. Attempting to install...\n"
-                yield "[INFO] Running: sudo apt-get update && sudo apt-get install -y ansible\n\n"
-                
-                # Install Ansible
+            yield "[INFO] Checking Ansible...\n"
+            stdin, stdout, stderr = client.exec_command('which ansible-playbook')
+            if stdout.channel.recv_exit_status() != 0:
+                yield "[⚠️  WARNING] Ansible not installed. Installing...\n"
                 stdin, stdout, stderr = client.exec_command(
-                    'sudo apt-get update && sudo apt-get install -y ansible',
-                    get_pty=True
-                )
-                install_code = stdout.channel.recv_exit_status()
-                
-                # Stream install output
+                    'sudo apt-get update -qq && sudo apt-get install -y ansible', get_pty=True)
                 for line in iter(stdout.readline, ''):
-                    if line:
-                        yield line
-                
-                if install_code != 0:
+                    if line: yield line
+                if stdout.channel.recv_exit_status() != 0:
                     yield "[✗ ERROR] Failed to install Ansible\n"
                     return
-                
-                yield "[✓ SUCCESS] Ansible installed successfully\n\n"
+                yield "[✓ SUCCESS] Ansible installed\n\n"
             else:
                 yield "[✓ OK] Ansible is installed\n\n"
             
-            # Step 3: Run the playbook from /tmp
             yield "─" * 70 + "\n"
-            yield f"[INFO] Running playbook: {playbook}\n"
+            yield f"[INFO] Running: {playbook}.yml\n"
             yield "─" * 70 + "\n\n"
             
-            # Use inline inventory to avoid host matching issues
-            cmd = (
-                "cd /tmp/ansible_deploy && "
-                "ansible-playbook "
-                f"  {playbook}.yml "
-                "  -i localhost, "
-                "  -c local "
-                "  -v"
-            )
-            
+            cmd = f"cd /tmp/ansible_deploy && PYTHONWARNINGS=ignore ANSIBLE_PYTHON_INTERPRETER=/usr/bin/python3 ansible-playbook {playbook}.yml -i localhost, -c local -v 2>&1"
             yield f"[INFO] Command: {cmd}\n\n"
             
-            # Execute playbook
             stdin, stdout, stderr = client.exec_command(cmd, get_pty=True)
-            
-            # Stream output
             for line in iter(stdout.readline, ''):
-                if line:
-                    yield line
+                if line: yield line
             
-            # Get exit status
             exit_code = stdout.channel.recv_exit_status()
-            
-            # Stream stderr if any
-            for line in iter(stderr.readline, ''):
-                if line:
-                    yield f"[STDERR] {line}"
-            
             yield "\n" + "─" * 70 + "\n"
             if exit_code == 0:
-                yield f"[✓ SUCCESS] Playbook completed successfully\n"
+                yield "[✓ SUCCESS] Playbook completed successfully\n"
             else:
                 yield f"[✗ FAILED] Playbook failed with exit code: {exit_code}\n"
         
         except Exception as e:
             yield f"\n[ERROR] Exception: {str(e)}\n"
             import traceback
-            yield f"{traceback.format_exc()}\n"
+            yield traceback.format_exc()
     
     return Response(generate(), mimetype='text/plain')
 
 @app.route('/ansible/status', methods=['GET'])
 def ansible_status():
-    """Check Ansible and playbooks status on target"""
     session_id = session.get('ssh_id')
-    
     if not session_id or session_id not in active_ssh_sessions:
         return jsonify({"success": False, "error": "SSH session not found"})
     
     client = active_ssh_sessions.get(session_id)
-    
     try:
-        ansible_ok = check_ansible_on_target(client)
-        playbooks_ok = check_playbooks_on_target(client)
-        
         return jsonify({
             "success": True,
-            "ansible_installed": ansible_ok,
-            "playbooks_copied": playbooks_ok,
-            "message": f"Ansible: {'✓ Installed' if ansible_ok else '✗ Not installed'} | Playbooks: {'✓ Copied' if playbooks_ok else '✗ Not copied'}"
+            "ansible_installed": check_ansible_on_target(client),
+            "playbooks_copied": check_playbooks_on_target(client)
         })
     except Exception as e:
         return jsonify({"success": False, "error": str(e)})
 
 @app.route('/ansible/setup', methods=['POST'])
 def ansible_setup():
-    """Setup Ansible and copy playbooks to target"""
     session_id = session.get('ssh_id')
-    
     if not session_id or session_id not in active_ssh_sessions:
-        return jsonify({"success": False, "error": "SSH session not found"})
+        return Response("ERROR: SSH session not found\n", mimetype='text/plain')
     
     client = active_ssh_sessions.get(session_id)
     
     def generate():
         try:
-            # Step 0: Create working directory
-            yield "[INFO] Creating working directory: /tmp/ansible_deploy\n"
+            yield "[INFO] Creating /tmp/ansible_deploy...\n"
             client.exec_command('mkdir -p /tmp/ansible_deploy')
             
-            # Step 1: Copy playbooks via SFTP
-            yield "[INFO] Copying playbooks to target...\n"
+            yield "[INFO] Copying playbooks via SFTP...\n"
             sftp = client.open_sftp()
+            copied = 0
             
-            # Copy all playbook files
-            local_playbooks_dir = PLAYBOOKS_DIR
-            playbooks_copied = 0
-            if local_playbooks_dir.exists():
-                for playbook_file in local_playbooks_dir.glob("*.yml"):
+            if PLAYBOOKS_DIR.exists():
+                for f in PLAYBOOKS_DIR.glob("*.yml"):
                     try:
-                        remote_path = f"/tmp/ansible_deploy/{playbook_file.name}"
-                        sftp.put(str(playbook_file), remote_path)
-                        yield f"  ✓ Copied {playbook_file.name}\n"
-                        playbooks_copied += 1
+                        sftp.put(str(f), f"/tmp/ansible_deploy/{f.name}")
+                        yield f"  ✓ Copied {f.name}\n"
+                        copied += 1
                     except Exception as e:
-                        yield f"  ✗ Failed to copy {playbook_file.name}: {str(e)}\n"
+                        yield f"  ✗ Failed {f.name}: {e}\n"
             
-            # Copy inventory directory if exists
-            if (ANSIBLE_DIR / "inventory").exists():
+            inv_dir = ANSIBLE_DIR / "inventory"
+            if inv_dir.exists():
                 client.exec_command('mkdir -p /tmp/ansible_deploy/inventory')
-                for inv_file in (ANSIBLE_DIR / "inventory").glob("*.yml"):
+                for f in inv_dir.glob("*.yml"):
                     try:
-                        remote_path = f"/tmp/ansible_deploy/inventory/{inv_file.name}"
-                        sftp.put(str(inv_file), remote_path)
-                        yield f"  ✓ Copied inventory/{inv_file.name}\n"
+                        sftp.put(str(f), f"/tmp/ansible_deploy/inventory/{f.name}")
+                        yield f"  ✓ Copied inventory/{f.name}\n"
                     except Exception as e:
-                        yield f"  ⚠️  Failed to copy inventory/{inv_file.name}: {str(e)}\n"
-            
-            # Copy group_vars if exists
-            group_vars_path = ANSIBLE_DIR / "inventory" / "group_vars"
-            if group_vars_path.exists():
-                client.exec_command('mkdir -p /tmp/ansible_deploy/inventory/group_vars')
-                for gv_dir in group_vars_path.iterdir():
-                    if gv_dir.is_dir():
-                        client.exec_command(f'mkdir -p /tmp/ansible_deploy/inventory/group_vars/{gv_dir.name}')
-                        for gv_file in gv_dir.glob("*"):
-                            if gv_file.is_file():
-                                try:
-                                    remote_path = f"/tmp/ansible_deploy/inventory/group_vars/{gv_dir.name}/{gv_file.name}"
-                                    sftp.put(str(gv_file), remote_path)
-                                except:
-                                    pass
+                        yield f"  ⚠️  inventory/{f.name}: {e}\n"
             
             sftp.close()
             
-            if playbooks_copied == 0:
+            if copied == 0:
                 yield "[✗ ERROR] No playbooks were copied\n"
                 return
             
-            yield f"[✓ OK] {playbooks_copied} playbooks copied successfully\n\n"
+            yield f"[✓ OK] {copied} playbooks copied\n\n"
             
-            # Step 2: Install Ansible if not present
-            yield "[INFO] Checking Ansible installation...\n"
+            yield "[INFO] Checking Ansible...\n"
             stdin, stdout, stderr = client.exec_command('which ansible-playbook')
-            check_code = stdout.channel.recv_exit_status()
-            
-            if check_code != 0:
-                yield "[⚠️  WARNING] Ansible not installed. Installing...\n"
-                yield "[INFO] Running: sudo apt-get update && sudo apt-get install -y ansible\n"
-                
-                # Update package list
-                stdin, stdout, stderr = client.exec_command('sudo apt-get update', get_pty=True)
-                update_code = stdout.channel.recv_exit_status()
+            if stdout.channel.recv_exit_status() != 0:
+                yield "[⚠️  WARNING] Installing Ansible...\n"
+                stdin, stdout, stderr = client.exec_command(
+                    'sudo apt-get update -qq && sudo apt-get install -y ansible', get_pty=True)
                 for line in iter(stdout.readline, ''):
-                    if line and ('Hit:' in line or 'Get:' in line or 'Reading' in line):
-                        yield f"  {line.rstrip()}\n"
-                
-                # Install Ansible
-                stdin, stdout, stderr = client.exec_command('sudo apt-get install -y ansible', get_pty=True)
-                install_code = stdout.channel.recv_exit_status()
-                
-                for line in iter(stdout.readline, ''):
-                    if line:
-                        yield line
-                
-                if install_code != 0:
-                    yield "[✗ ERROR] Failed to install Ansible\n"
-                    return
-                
-                yield "[✓ SUCCESS] Ansible installed successfully\n\n"
+                    if line: yield line
+                yield "[✓ SUCCESS] Ansible installed\n\n"
             else:
-                yield "[✓ OK] Ansible is already installed\n\n"
+                yield "[✓ OK] Ansible already installed\n\n"
             
-            # Step 3: Verify setup
-            yield "[INFO] Verifying setup...\n"
-            stdin, stdout, stderr = client.exec_command(r'ls -la /tmp/ansible_deploy | grep -E "\.yml|inventory"')
-            output = stdout.read().decode('utf-8')
-            yield f"  Contents of /tmp/ansible_deploy:\n{output}\n"
-            
+            yield "[INFO] Verifying...\n"
+            stdin, stdout, stderr = client.exec_command('ls /tmp/ansible_deploy/')
+            yield stdout.read().decode('utf-8') + "\n"
             yield "[✓ SUCCESS] Target machine is ready!\n"
-            yield "[INFO] You can now run Ansible playbooks from the dashboard.\n"
         
         except Exception as e:
             yield f"\n[ERROR] Setup failed: {str(e)}\n"
             import traceback
-            yield f"{traceback.format_exc()}\n"
+            yield traceback.format_exc()
     
     return Response(generate(), mimetype='text/plain')
 
@@ -1623,12 +1600,11 @@ if __name__ == '__main__':
     
     Features:
     ✓ Tailscale machine discovery
-    ✓ SSH login to machines
-    ✓ Browse orchestrator logs
-    ✓ Live tail log streams
-    ✓ Search logs by timestamp
-    ✓ Run Ansible playbooks
-    ✓ Real-time deployment output
+    ✓ SSH login (password or key)
+    ✓ Browse orchestrator logs (tail -n 1000)
+    ✓ Live tail with pretty-print & filter
+    ✓ JSON log search by epoch time range
+    ✓ Run Ansible playbooks with streaming output
     """)
     
     app.run(host='127.0.0.1', port=5005, debug=True, use_reloader=False)

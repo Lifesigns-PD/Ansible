@@ -1,59 +1,47 @@
 ---
 - name: Rollback to previous version
-  hosts: orchestrator_servers
-  become: yes
+  hosts: all
+  become: no
   gather_facts: no
 
   pre_tasks:
-    - name: Confirm rollback proceed
-      pause:
-        prompt: "WARNING: This will rollback to the previous version. Continue? (yes/no)"
-      register: rollback_confirm
-      when: not skip_confirm | default(false)
-
-    - name: Verify backup exists
+    - name: Verify binary backup exists
       stat:
-        path: "{{ app_bin_path }}.backup"
+        path: "{{ app_bin_path | default('/opt/go-ble-orchestrator/go-ble-orchestrator') }}.backup"
       register: binary_backup
-      failed_when: not binary_backup.stat.exists
+
+    - name: Abort if no backup found
+      fail:
+        msg: "No binary backup found at {{ app_bin_path | default('/opt/go-ble-orchestrator/go-ble-orchestrator') }}.backup — cannot rollback."
+      when: not binary_backup.stat.exists
 
   tasks:
     - name: Stop orchestrator service
-      systemd_service:
-        name: "{{ service_name }}"
-        state: stopped
-      become: yes
+      shell: sudo systemctl stop "{{ service_name | default('go-ble-orchestrator') }}"
+      ignore_errors: yes
 
     - name: Restore previous binary
       copy:
-        src: "{{ app_bin_path }}.backup"
-        dest: "{{ app_bin_path }}"
+        src: "{{ app_bin_path | default('/opt/go-ble-orchestrator/go-ble-orchestrator') }}.backup"
+        dest: "{{ app_bin_path | default('/opt/go-ble-orchestrator/go-ble-orchestrator') }}"
         remote_src: yes
-        owner: "{{ app_user }}"
-        group: "{{ app_group }}"
-        mode: 0755
-      become: yes
+        mode: '0755'
 
     - name: Restore previous configuration
       copy:
-        src: "{{ app_config_path }}/config.json.backup"
-        dest: "{{ app_config_path }}/config.json"
+        src: "{{ app_config_path | default('/opt/go-ble-orchestrator/config') }}/config.json.backup"
+        dest: "{{ app_config_path | default('/opt/go-ble-orchestrator/config') }}/config.json"
         remote_src: yes
-        owner: "{{ app_user }}"
-        group: "{{ app_group }}"
-        mode: 0644
-      become: yes
+        mode: '0644'
       ignore_errors: yes
 
     - name: Start orchestrator service
-      systemd_service:
-        name: "{{ service_name }}"
-        state: started
-      become: yes
+      shell: sudo systemctl start "{{ service_name | default('go-ble-orchestrator') }}"
+      ignore_errors: yes
 
-    - name: Wait for orchestrator to be ready
+    - name: Wait for orchestrator to respond
       uri:
-        url: "http://{{ inventory_hostname }}:{{ orchestrator_port }}/health"
+        url: "http://localhost:{{ orchestrator_port | default('8083') }}/health"
         status_code: [200, 404]
       register: result
       until: result.status in [200, 404]
@@ -61,6 +49,11 @@
       delay: 2
       ignore_errors: yes
 
+    - name: Check final service status
+      shell: systemctl is-active "{{ service_name | default('go-ble-orchestrator') }}"
+      register: final_status
+      ignore_errors: yes
+
     - name: Rollback complete
       debug:
-        msg: "Successfully rolled back to previous version"
+        msg: "Rollback done. Service state: {{ final_status.stdout | default('unknown') }}"

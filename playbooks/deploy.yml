@@ -1,53 +1,215 @@
 ---
-- name: Deploy BLE Orchestrator via GitHub Script
-  hosts: orchestrator_servers
-  become: yes
-  gather_facts: yes
-  max_fail_percentage: 0
+# deploy.yml — mirrors setup.sh exactly, step by step
+# Interactive prompts answered automatically via printf pipe:
+#   1. "yes" → remove /opt/go-ble-orchestrator
+#   2. "yes" → update gateway-dashboard
+#   3. "no"  → do NOT open nano to edit config.json
+
+- name: Deploy BLE Orchestrator + Gateway Dashboard
+  hosts: all
+  become: no
+  gather_facts: no
+
+  vars:
+    service_name: "go-ble-orchestrator"
+    install_dir: "/opt/go-ble-orchestrator"
+    gateway_service_name: "gateway-dashboard"
+    gateway_install_dir: "/opt/gateway-dashboard"
+    gateway_service_file: "/etc/systemd/system/gateway-dashboard.service"
+    repo_api_url: "https://api.github.com/repos/Lifesigns-PD/orchestrator-releases/releases/latest"
+    gateway_repo_api_url: "https://api.github.com/repos/PD-dev-2025/gateway-dashboard-release/releases/latest"
 
   tasks:
-    - name: Display deployment info
-      debug:
-        msg: "Deploying latest release from GitHub to {{ inventory_hostname }}"
 
-    - name: Download setup.sh from GitHub
-      ansible.builtin.get_url:
-        url: "https://github.com/Lifesigns-PD/orchestrator-releases/releases/download/setup/setup.sh"
-        dest: "/tmp/setup.sh"
-        mode: '0755' # This automatically handles the 'chmod +x'
-        force: yes
+    # ─────────────────────────────────────────────
+    # PREFLIGHT CHECKS
+    # ─────────────────────────────────────────────
 
-    - name: Execute the setup.sh script automatically
-      ansible.builtin.shell: |
-        # We pipe the answers to bypass the interactive prompts in your script:
-        # 1. 'yes' -> Are you sure you want to remove previous files?
-        # 2. 'yes' -> Additionally you need to update the gateway-dashboard version?
-        # 3. 'no'  -> Do you want to edit gateway-dashboard config.json now in nano? (MUST be no!)
-        printf "yes\nyes\nno\n" | /tmp/setup.sh
-      args:
-        executable: /bin/bash
-      register: script_output
-
-    - name: Display setup script logs
-      debug:
-        var: script_output.stdout_lines
-
-  post_tasks:
-    - name: Verify services are running
-      block:
-        - name: Check orchestrator service status
-          systemd_service:
-            name: go-ble-orchestrator
-          register: orchestrator_status
-        
-        - name: Check gateway-dashboard status
-          systemd_service:
-            name: gateway-dashboard
-          register: gateway_status
-        
-        - name: Display service results
-          debug:
-            msg: |
-              ✓ Orchestrator: {{ orchestrator_status.status.ActiveState | default('Unknown') }}
-              ✓ Gateway Dashboard: {{ gateway_status.status.ActiveState | default('Unknown') }}
+    - name: Check required commands exist (curl, unzip, sudo)
+      shell: "command -v {{ item }}"
+      loop:
+        - curl
+        - unzip
+        - sudo
+      register: cmd_check
       ignore_errors: yes
+
+    - name: Fail if any required command is missing
+      fail:
+        msg: "Missing required command. Please install: curl, unzip, sudo"
+      when: cmd_check.results | selectattr('rc', 'ne', 0) | list | length > 0
+
+    - name: Check OS is Ubuntu 22.04+
+      shell: |
+        . /etc/os-release
+        if [ "${ID}" != "ubuntu" ]; then
+          echo "FAIL: Not Ubuntu (found: ${PRETTY_NAME})"
+          exit 1
+        fi
+        major="${VERSION_ID%%.*}"
+        if [ "${major}" -lt 22 ]; then
+          echo "FAIL: Ubuntu version too old (found: ${PRETTY_NAME})"
+          exit 1
+        fi
+        echo "OK: ${PRETTY_NAME}"
+      register: os_check
+
+    - name: Show OS check result
+      debug:
+        msg: "{{ os_check.stdout }}"
+
+    # ─────────────────────────────────────────────
+    # ORCHESTRATOR — fetch release info
+    # ─────────────────────────────────────────────
+
+    - name: Fetch latest orchestrator release metadata from GitHub API
+      shell: curl -fsSL "{{ repo_api_url }}"
+      register: release_json
+
+    - name: Extract orchestrator zip URL
+      shell: |
+        echo '{{ release_json.stdout }}' | grep -oE '"browser_download_url":[[:space:]]*"[^"]+Installationsmain-[^"]+\.zip"' | head -n 1 | cut -d '"' -f 4
+      register: zip_url_result
+
+    - name: Extract orchestrator tag name
+      shell: |
+        echo '{{ release_json.stdout }}' | grep -oE '"tag_name":[[:space:]]*"[^"]+"' | head -n 1 | cut -d '"' -f 4
+      register: tag_name_result
+
+    - name: Fail if orchestrator zip URL not found
+      fail:
+        msg: "Could not find an Installationsmain zip asset in the latest release."
+      when: zip_url_result.stdout | trim == ''
+
+    - name: Show what will be downloaded
+      debug:
+        msg: "Downloading orchestrator release: {{ tag_name_result.stdout }} from {{ zip_url_result.stdout }}"
+
+    # ─────────────────────────────────────────────
+    # ORCHESTRATOR — download + unzip
+    # ─────────────────────────────────────────────
+
+    - name: Create temp working directory
+      shell: mktemp -d
+      register: work_dir_result
+
+    - name: Set work_dir fact
+      set_fact:
+        work_dir: "{{ work_dir_result.stdout | trim }}"
+
+    - name: Download orchestrator zip
+      shell: >
+        curl -fL "{{ zip_url_result.stdout | trim }}"
+        -o "{{ work_dir }}/Installationsmain.zip"
+      register: download_result
+
+    - name: Unzip orchestrator bundle
+      shell: unzip -q "{{ work_dir }}/Installationsmain.zip" -d "{{ work_dir }}"
+
+    - name: Verify Installationsmain directory exists in bundle
+      shell: test -d "{{ work_dir }}/Installationsmain" && echo "OK" || echo "MISSING"
+      register: bundle_check
+
+    - name: Fail if bundle structure is wrong
+      fail:
+        msg: "Unzipped bundle does not contain Installationsmain/ directory."
+      when: "'MISSING' in bundle_check.stdout"
+
+    - name: Make DeviceManager_Install.sh executable
+      shell: chmod +x "{{ work_dir }}/Installationsmain/DeviceManager_Install.sh"
+
+    # ─────────────────────────────────────────────
+    # ORCHESTRATOR — stop + remove old installation
+    # ─────────────────────────────────────────────
+
+    - name: Stop go-ble-orchestrator service if it exists
+      shell: |
+        if sudo systemctl list-unit-files | grep -q "^{{ service_name }}\.service"; then
+          sudo systemctl stop {{ service_name }} || true
+          sleep 2
+          sudo systemctl kill --signal=SIGKILL {{ service_name }} 2>/dev/null || true
+          sudo systemctl disable {{ service_name }} || true
+          echo "Service stopped and disabled"
+        else
+          echo "Service does not exist yet"
+        fi
+      async: 30
+      poll: 5
+      register: stop_orchestrator
+      ignore_errors: yes
+
+    - name: Show stop result
+      debug:
+        msg: "{{ stop_orchestrator.stdout | default('task timed out or failed - check passwordless sudo for this user') }}"
+
+    - name: Kill any remaining go-ble-orchestrator processes
+      shell: |
+        sudo pkill -9 -f "{{ service_name }}" 2>/dev/null || true
+        sleep 1
+      ignore_errors: yes
+
+    # ─────────────────────────────────────────────
+    # ORCHESTRATOR — run DeviceManager_Install.sh
+    # Pipe answers to all interactive prompts:
+    #   prompt 1: "Are you sure you want to remove previous files..." → yes
+    #   prompt 2: "Additionally you need to update gateway-dashboard..." → yes
+    #   prompt 3: "Do you want to edit gateway-dashboard config.json..." → no
+    # ─────────────────────────────────────────────
+
+    - name: Run DeviceManager_Install.sh (non-interactive)
+      shell: |
+        cd "{{ work_dir }}/Installationsmain"
+        printf 'yes\nyes\nno\n' | sudo ./DeviceManager_Install.sh
+      register: installer_output
+      ignore_errors: yes
+
+    - name: Show installer output
+      debug:
+        var: installer_output.stdout_lines
+
+    - name: Show installer errors (if any)
+      debug:
+        var: installer_output.stderr_lines
+      when: installer_output.stderr_lines is defined and installer_output.stderr_lines | length > 0
+
+    - name: Enable go-ble-orchestrator service
+      shell: sudo systemctl enable "{{ service_name }}" || true
+      ignore_errors: yes
+
+    # ─────────────────────────────────────────────
+    # CLEANUP + FINAL STATUS
+    # ─────────────────────────────────────────────
+
+    - name: Clean up temp working directory
+      shell: rm -rf "{{ work_dir }}"
+      ignore_errors: yes
+
+    - name: Check go-ble-orchestrator final status
+      shell: systemctl is-active "{{ service_name }}" 2>/dev/null || echo "inactive"
+      register: final_orchestrator_status
+      ignore_errors: yes
+
+    - name: Check gateway-dashboard final status
+      shell: systemctl is-active "{{ gateway_service_name }}" 2>/dev/null || echo "inactive"
+      register: final_gateway_status
+      ignore_errors: yes
+
+    - name: Show final deployment status
+      debug:
+        msg: |
+          ════════════════════════════════════════════════
+           DEPLOYMENT COMPLETE
+          ════════════════════════════════════════════════
+           go-ble-orchestrator : {{ final_orchestrator_status.stdout | default('unknown') }}
+           gateway-dashboard   : {{ final_gateway_status.stdout | default('unknown') }}
+          ════════════════════════════════════════════════
+
+    - name: Fail if go-ble-orchestrator is not running
+      fail:
+        msg: "go-ble-orchestrator is not active after deployment. Check installer output above."
+      when: final_orchestrator_status.stdout | default('') not in ['active', 'activating']
+
+    - name: Fail if gateway-dashboard is not running
+      fail:
+        msg: "gateway-dashboard is not active after deployment. Check logs above."
+      when: final_gateway_status.stdout | default('') not in ['active', 'activating']
