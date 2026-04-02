@@ -1,55 +1,53 @@
 ---
-- name: Deploy BLE Orchestrator and MQTT
+- name: Deploy BLE Orchestrator via GitHub Script
   hosts: orchestrator_servers
   become: yes
   gather_facts: yes
   max_fail_percentage: 0
 
-  pre_tasks:
+  tasks:
     - name: Display deployment info
       debug:
-        msg: |
-          Deploying {{ app_name }} v{{ app_version }}
-          Target: {{ inventory_hostname }}
-          Environment: {{ environment }}
+        msg: "Deploying latest release from GitHub to {{ inventory_hostname }}"
 
-    - name: Validate prerequisites
-      assert:
-        that:
-          - binary_source_dir is defined
-          - app_version is defined
-        fail_msg: "Missing required variables. Check group_vars."
+    - name: Download setup.sh from GitHub
+      ansible.builtin.get_url:
+        url: "https://github.com/Lifesigns-PD/orchestrator-releases/releases/download/setup/setup.sh"
+        dest: "/tmp/setup.sh"
+        mode: '0755' # This automatically handles the 'chmod +x'
+        force: yes
 
-  roles:
-    - role: prerequisites
-      tags: [prerequisites, always]
-    
-    - role: mqtt
-      tags: [mqtt, broker]
-    
-    - role: orchestrator
-      tags: [orchestrator, app]
+    - name: Execute the setup.sh script automatically
+      ansible.builtin.shell: |
+        # We pipe the answers to bypass the interactive prompts in your script:
+        # 1. 'yes' -> Are you sure you want to remove previous files?
+        # 2. 'yes' -> Additionally you need to update the gateway-dashboard version?
+        # 3. 'no'  -> Do you want to edit gateway-dashboard config.json now in nano? (MUST be no!)
+        printf "yes\nyes\nno\n" | /tmp/setup.sh
+      args:
+        executable: /bin/bash
+      register: script_output
+
+    - name: Display setup script logs
+      debug:
+        var: script_output.stdout_lines
 
   post_tasks:
-    - name: Verify deployment
+    - name: Verify services are running
       block:
-        - name: Get orchestrator service status
+        - name: Check orchestrator service status
           systemd_service:
-            name: "{{ service_name }}"
+            name: go-ble-orchestrator
           register: orchestrator_status
         
-        - name: Get MQTT service status
+        - name: Check gateway-dashboard status
           systemd_service:
-            name: mosquitto
-          register: mqtt_status
+            name: gateway-dashboard
+          register: gateway_status
         
-        - name: Display deployment results
+        - name: Display service results
           debug:
             msg: |
-              ✓ Orchestrator: {{ orchestrator_status.status.ActiveState }}
-              ✓ MQTT: {{ mqtt_status.status.ActiveState }}
-              ✓ Dashboard: http://{{ inventory_hostname }}:{{ orchestrator_port }}
-      tags: [never, verify]
-
-  handlers:
-    - import_tasks: ../../roles/orchestrator/handlers/main.yml
+              ✓ Orchestrator: {{ orchestrator_status.status.ActiveState | default('Unknown') }}
+              ✓ Gateway Dashboard: {{ gateway_status.status.ActiveState | default('Unknown') }}
+      ignore_errors: yes

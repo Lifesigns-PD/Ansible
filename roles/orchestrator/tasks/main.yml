@@ -91,3 +91,24 @@
 - name: Display service status
   debug:
     msg: "{{ service_name }} is {{ service_status.status.ActiveState }}"
+- name: Check if config.json exists
+  stat:
+    path: "{{ app_home }}/config.json"
+  register: config_stat
+
+- name: Extract current appVersion from remote config.json
+  shell: "grep 'appVersion' {{ app_home }}/config.json | awk -F'\"' '{print $4}'"
+  register: remote_version
+  when: config_stat.stat.exists
+  ignore_errors: yes
+
+- name: Report version status
+  debug:
+    msg: |
+      {% if not config_stat.stat.exists %}
+      ALERT: No existing service or config found at {{ app_home }}.
+      {% elif remote_version.stdout != app_version %}
+      REMINDER: Older version ({{ remote_version.stdout }}) is running. Target version is {{ app_version }}.
+      {% else %}
+      Service is already up to date (v{{ remote_version.stdout }}).
+      {% endif %}

@@ -1,0 +1,16 @@
+---
+- name: Orchestrator
+  hosts: tailscale_servers
+  become: yes
+  tasks:
+    - name: install Mosquitto
+      apt: Mosquitto 
+      state: present
+    - name: install Mosquitto Clients
+      apt: Mosquitto-clients
+      state: present
+    - name: install setup.sh
+      apt: https://github.com/Lifesigns-PD/orchestrator-releases/releases/download/setup/setup.sh
+      state: present
+      debug:
+        msg: "This playbook does nothing but serves as a placeholder for recently edited files."
