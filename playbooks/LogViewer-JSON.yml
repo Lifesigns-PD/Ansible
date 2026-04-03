@@ -1,0 +1,193 @@
+---
+# JSON Log Viewer & Search Playbook
+# Search and display JSON logs by time range
+# Variables (pass from Semaphore):
+#   - log_file: filename to search (e.g., "app.log")
+#   - start_date: start date (e.g., "2024-04-01")
+#   - start_time: start time (e.g., "14:30:00")
+#   - end_date: end date
+#   - end_time: end time
+
+- name: Search and Display JSON Logs
+  hosts: all
+  gather_facts: no
+  vars:
+    log_dir_current: "/opt/go-ble-orchestrator/logs/json_logs"
+    log_dir_legacy: "/opt/go-ble-orchestrator/json_logs"
+    # Convert dates to epoch from Semaphore variables
+    start_epoch: "{{ lookup('pipe', 'date -d \"{{ start_date }} {{ start_time }}\" +%s') }}"
+    end_epoch: "{{ lookup('pipe', 'date -d \"{{ end_date }} {{ end_time }}\" +%s') }}"
+    
+  tasks:
+    
+    - name: "LOGS: Check if file exists (current location)"
+      stat:
+        path: "{{ log_dir_current }}/{{ log_file }}"
+      register: log_file_current
+      changed_when: no
+      
+    - name: "LOGS: Check if file exists (legacy location)"
+      stat:
+        path: "{{ log_dir_legacy }}/{{ log_file }}"
+      register: log_file_legacy
+      changed_when: no
+      
+    - name: "LOGS: Set actual log path"
+      set_fact:
+        actual_log_path: "{{ log_dir_current }}/{{ log_file }}"
+      when: log_file_current.stat.exists
+      
+    - name: "LOGS: Set actual log path (legacy)"
+      set_fact:
+        actual_log_path: "{{ log_dir_legacy }}/{{ log_file }}"
+      when: not log_file_current.stat.exists and log_file_legacy.stat.exists
+      
+    - name: "LOGS: Get file info"
+      shell: |
+        if [ -f "{{ actual_log_path }}" ]; then
+          echo "FILE_FOUND"
+          wc -l "{{ actual_log_path }}" | awk '{print "Lines: " $1}'
+          ls -lh "{{ actual_log_path }}" | awk '{print "Size: " $5}'
+        else
+          echo "FILE_NOT_FOUND"
+        fi
+      register: file_info
+      ignore_errors: yes
+      changed_when: no
+      
+    - name: "LOGS: Display last 100 lines"
+      shell: "tail -n 100 {{ actual_log_path }} 2>/dev/null"
+      register: tail_output
+      ignore_errors: yes
+      changed_when: no
+      when: file_info.stdout | regex_search('FILE_FOUND')
+      
+    - name: "LOGS: Search by timestamp range"
+      shell: |
+        python3 << 'EOPYTHON'
+        import json
+        import sys
+        
+        log_file = "{{ actual_log_path }}"
+        start_epoch = {{ start_epoch }}
+        end_epoch = {{ end_epoch }}
+        
+        matching_lines = []
+        try:
+            with open(log_file, 'r') as f:
+                for line in f:
+                    try:
+                        entry = json.loads(line)
+                        # Check for various timestamp field names
+                        timestamp = entry.get('timestamp1') or entry.get('timestamp') or entry.get('time')
+                        
+                        if timestamp:
+                            # Handle both ms and s epochs
+                            if timestamp > 1e12:
+                                ts = timestamp / 1000
+                            else:
+                                ts = timestamp
+                            
+                            if start_epoch <= ts <= end_epoch:
+                                matching_lines.append(line.rstrip())
+                    except json.JSONDecodeError:
+                        pass
+        except FileNotFoundError:
+            print(f"ERROR: Log file not found: {log_file}")
+            sys.exit(1)
+        
+        for line in matching_lines[-100:]:  # Last 100 matches
+            print(line)
+        
+        print(f"\n[INFO] Total matches: {len(matching_lines)}", file=sys.stderr)
+        EOPYTHON
+      register: search_results
+      ignore_errors: yes
+      changed_when: no
+      
+    - name: "DISPLAY: Show search results"
+      debug:
+        msg: |
+          ╔════════════════════════════════════════════════════════════╗
+          ║                   JSON LOG SEARCH RESULTS                  ║
+          ╚════════════════════════════════════════════════════════════╝
+          
+          📁 FILE: {{ log_file }}
+          🌐 TARGET: {{ inventory_hostname }}
+          📊 INFO:
+          {{ file_info.stdout_lines | join('\n') }}
+          
+          🔍 SEARCH RANGE:
+             • Start: {{ start_date }} {{ start_time }}
+             • End: {{ end_date }} {{ end_time }}
+          
+          📋 RESULTS (Last 50 lines):
+          {{ tail_output.stdout_lines[:50] | join('\n') if tail_output.stdout_lines else 'No logs in time range' }}
+          
+    - name: "EXPORT: Save results to file"
+      copy:
+        content: |
+          {
+            "file": "{{ log_file }}",
+            "target": "{{ inventory_hostname }}",
+            "search_start": "{{ start_date }} {{ start_time }}",
+            "search_end": "{{ end_date }} {{ end_time }}",
+            "results": {{ search_results.stdout_lines | to_nice_json }},
+            "total_matches": {{ search_results.stderr | regex_search('Total matches: (\d+)', '\\1') | default(0) }}
+          }
+        dest: "/tmp/log_search_results_{{ inventory_hostname }}_{{ log_file }}.json"
+      delegate_to: localhost
+      become: no
+
+---
+# Real-Time Log Streaming
+# Tail a log file in real-time
+
+- name: Stream Log File in Real-Time
+  hosts: all
+  gather_facts: no
+  vars:
+    log_file: "{{ log_file_name | default('app.log') }}"
+    tail_lines: 50
+    
+  tasks:
+    
+    - name: "STREAM: Determine log path (current first)"
+      shell: |
+        if [ -f "/opt/go-ble-orchestrator/logs/{{ log_file }}" ]; then
+          echo "/opt/go-ble-orchestrator/logs/{{ log_file }}"
+        elif [ -f "/opt/go-ble-orchestrator/{{ log_file }}" ]; then
+          echo "/opt/go-ble-orchestrator/{{ log_file }}"
+        else
+          echo "NOT_FOUND"
+        fi
+      register: log_path_result
+      changed_when: no
+      
+    - name: "STREAM: Get current log tail"
+      shell: "tail -n {{ tail_lines }} {{ log_path_result.stdout }} 2>/dev/null"
+      register: log_tail
+      when: log_path_result.stdout != "NOT_FOUND"
+      changed_when: no
+      
+    - name: "DISPLAY: Show log stream"
+      debug:
+        msg: |
+          ╔════════════════════════════════════════════════════════════╗
+          ║                    LOG STREAM ({{ tail_lines }} lines)                 ║
+          ╚════════════════════════════════════════════════════════════╝
+          
+          📄 FILE: {{ log_file }}
+          🌐 TARGET: {{ inventory_hostname }}
+          📍 PATH: {{ log_path_result.stdout }}
+          
+          ─────────────────────────────────────────────────────────────
+          {{ log_tail.stdout_lines | join('\n') if log_tail.stdout_lines else 'No logs found' }}
+          ─────────────────────────────────────────────────────────────
+          
+    - name: "EXPORT: Save stream snapshot"
+      copy:
+        content: "{{ log_tail.stdout }}"
+        dest: "/tmp/log_stream_{{ inventory_hostname }}_{{ log_file | replace('/', '_') }}.txt"
+      delegate_to: localhost
+      become: no

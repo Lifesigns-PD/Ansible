@@ -9,7 +9,11 @@ import json
 import uuid
 import subprocess
 import paramiko
+import socket
 import shlex
+import threading
+import time
+import queue
 from pathlib import Path
 from flask import Flask, render_template_string, jsonify, request, session, redirect, url_for, flash, Response
 from dotenv import load_dotenv
@@ -21,8 +25,11 @@ load_dotenv(env_path)
 app = Flask(__name__)
 app.secret_key = os.urandom(24)
 
-# Configuration
-TAILSCALE_API_KEY = os.getenv("TAILSCALE_API_KEY")
+# Configuration - Load from .env file
+TAILSCALE_API_KEY = os.getenv("Tailscale-tailnet-apikey") or os.getenv("TAILSCALE_API_KEY")
+TAILSCALE_TENANT_NAME = os.getenv("Tailscale-tailnet-name") or os.getenv("TAILSCALE_TENANT_NAME")
+LINUX_USER_PASS = os.getenv("linux_user_pass") or os.getenv("LINUX_USER_PASS", "mpr")
+
 LOG_DIR = "/opt/go-ble-orchestrator/logs"
 ANSIBLE_DIR = Path(__file__).parent.parent  # Points to /ansible directory
 PLAYBOOKS_DIR = ANSIBLE_DIR / "playbooks"
@@ -31,13 +38,20 @@ INVENTORY_FILE = ANSIBLE_DIR / "inventory" / "production.yml"
 # In-memory storage for active SSH sessions
 active_ssh_sessions = {}
 
+# Background monitoring - cached machine list
+cached_machines = []
+cached_machines_lock = threading.Lock()
+last_update_time = None
+update_interval = 30  # Update every 30 seconds
+monitoring_active = False
+
 # ============================================================================
 # TAILSCALE INTEGRATION
 # ============================================================================
 
 def get_tailscale_machines_api():
     """Get machines from Tailscale API + local client for real-time status"""
-    api_key = os.getenv("TAILSCALE_API_KEY")
+    api_key = TAILSCALE_API_KEY
     
     machines_by_ip = {}
     try:
@@ -151,11 +165,55 @@ def get_tailscale_machines_local():
         return []
 
 # ============================================================================
+# BACKGROUND MONITORING - Auto-detect new machines and status changes
+# ============================================================================
+
+def background_monitor_machines():
+    """Background worker thread that continuously monitors Tailscale tailnet for changes"""
+    global cached_machines, last_update_time, monitoring_active
+    
+    print("[Monitor] Starting background machine monitoring thread...")
+    monitoring_active = True
+    
+    while monitoring_active:
+        try:
+            machines = get_tailscale_machines_api()
+            
+            with cached_machines_lock:
+                cached_machines = machines
+                last_update_time = time.time()
+                online_count = sum(1 for m in machines if m['online'])
+                total_count = len(machines)
+            
+            print(f"[Monitor] Updated at {time.strftime('%H:%M:%S')} - {online_count}/{total_count} machines online")
+            
+        except Exception as e:
+            print(f"[Monitor] Error during update: {e}")
+        
+        # Wait before next update
+        time.sleep(update_interval)
+
+def start_background_monitor():
+    """Start the background monitoring thread (daemon mode)"""
+    global monitoring_active
+    
+    if not monitoring_active:
+        monitor_thread = threading.Thread(target=background_monitor_machines, daemon=True)
+        monitor_thread.start()
+        print("[Monitor] Background monitoring thread started")
+
+def stop_background_monitor():
+    """Stop the background monitoring thread"""
+    global monitoring_active
+    monitoring_active = False
+    print("[Monitor] Background monitoring thread stopped")
+
+# ============================================================================
 # SSH EXECUTION HELPERS
 # ============================================================================
 
-def execute_ssh(command):
-    """Execute command over active SSH session"""
+def execute_ssh(command, timeout=30):
+    """Execute command over active SSH session with timeout"""
     session_id = session.get('ssh_id')
     if not session_id or session_id not in active_ssh_sessions:
         return None, "Session expired. Please reconnect."
@@ -163,12 +221,24 @@ def execute_ssh(command):
     client = active_ssh_sessions[session_id]
     try:
         stdin, stdout, stderr = client.exec_command(command)
-        exit_status = stdout.channel.recv_exit_status()
+        # Set timeout on the channel to prevent hanging on large files
+        stdout.channel.settimeout(timeout)
+        
+        try:
+            exit_status = stdout.channel.recv_exit_status()
+        except socket.timeout:
+            return None, f"Command timed out after {timeout}s"
+        
         if exit_status != 0:
-            err = stderr.read().decode('utf-8')
-            out = stdout.read().decode('utf-8')
+            err = stderr.read().decode('utf-8', errors='ignore')
+            out = stdout.read().decode('utf-8', errors='ignore')
             return out or None, err
-        return stdout.read().decode('utf-8'), None
+        
+        # Read with size limit to prevent massive memory bloat on huge files
+        out = stdout.read(16*1024*1024).decode('utf-8', errors='ignore')  # 16MB limit
+        return out, None
+    except socket.timeout:
+        return None, "SSH command timed out"
     except Exception as e:
         active_ssh_sessions.pop(session_id, None)
         session.pop('ssh_id', None)
@@ -211,6 +281,205 @@ def check_playbooks_on_target(client):
         return False
 
 # ============================================================================
+# JSON LOG HELPERS - Time conversion and searching
+# ============================================================================
+
+from datetime import datetime
+import time as time_module
+
+def parse_datetime_string(dt_str):
+    """Parse dd/mm/yyyy hh:mm:ss to epoch seconds"""
+    try:
+        dt = datetime.strptime(dt_str.strip(), "%d/%m/%Y %H:%M:%S")
+        epoch_seconds = int(dt.timestamp())
+        return epoch_seconds
+    except Exception as e:
+        raise ValueError(f"Invalid datetime format: {dt_str}. Expected: dd/mm/yyyy hh:mm:ss. Error: {e}")
+
+def search_json_logs_by_timestamp(client, log_dir, log_file, start_epoch, end_epoch):
+    """
+    Search JSON log file for entries with timestamp1 within range
+    Returns matching lines as list
+    """
+    try:
+        # Use grep + awk to search timestamp1 in JSON files
+        # grep - find lines with timestamp1
+        # awk - parse and filter by epoch range
+        command = f"""
+        grep -h 'timestamp1' {log_dir}/{log_file} 2>/dev/null | awk -F'timestamp1":' '{{
+            split($2, a, ",");
+            ts = a[1];
+            gsub(/[^0-9]/, "", ts);
+            if (ts >= {start_epoch} && ts <= {end_epoch}) {{
+                print $0
+            }}
+        }}' | head -1000
+        """
+        
+        stdin, stdout, stderr = client.exec_command(command)
+        exit_code = stdout.channel.recv_exit_status()
+        output = stdout.read().decode('utf-8').strip()
+        
+        if exit_code != 0:
+            error = stderr.read().decode('utf-8').strip()
+            return [], error
+        
+        lines = [line for line in output.split('\n') if line.strip()]
+        return lines, None
+        
+    except Exception as e:
+        return [], str(e)
+
+def list_json_logs(client):
+    """Get list of json_logs from both /opt/go-ble-orchestrator/logs and /opt/go-ble-orchestrator/"""
+    json_logs = {'logs': [], 'root': []}
+    
+    try:
+        # Check /opt/go-ble-orchestrator/logs/json_logs
+        cmd1 = 'ls -1 /opt/go-ble-orchestrator/logs/json_logs 2>/dev/null'
+        stdin, stdout, stderr = client.exec_command(cmd1)
+        stdout.channel.recv_exit_status()
+        logs_dir_files = stdout.read().decode('utf-8').strip().split('\n')
+        json_logs['logs'] = [f for f in logs_dir_files if f.strip() and f.endswith('.log')]
+    except:
+        pass
+    
+    try:
+        # Check /opt/go-ble-orchestrator/json_logs (in case running older version)
+        cmd2 = 'ls -1 /opt/go-ble-orchestrator/json_logs 2>/dev/null'
+        stdin, stdout, stderr = client.exec_command(cmd2)
+        stdout.channel.recv_exit_status()
+        root_dir_files = stdout.read().decode('utf-8').strip().split('\n')
+        json_logs['root'] = [f for f in root_dir_files if f.strip() and f.endswith('.log')]
+    except:
+        pass
+    
+    return json_logs
+
+# ============================================================================
+# BUFFERED LIVE TAIL STREAMING - 3-second chunks with threading
+# ============================================================================
+
+class BufferedTailStreamer:
+    """
+    Efficiently streams tail -f output in 3-second chunks
+    Uses threading to pre-fetch next chunk while streaming current chunk
+    Prevents memory bloat and frontend lag
+    """
+    
+    def __init__(self, client, log_dir, filename, chunk_size=3):
+        self.client = client
+        self.log_path = f"{log_dir}/{filename}"
+        self.chunk_size = chunk_size  # seconds
+        self.data_queue = queue.Queue(maxsize=2)  # Buffer 2 chunks max
+        self.stop_event = threading.Event()
+        self.reader_thread = None
+        self.chunk_count = 0
+    
+    def _read_tail_chunk(self):
+        """Read last 100 lines from log file (runs in background thread)"""
+        try:
+            # Use tail -f with timeout protection
+            stdin, stdout, stderr = self.client.exec_command(
+                f'tail -n 100 {self.log_path}',
+                timeout=5
+            )
+            exit_code = stdout.channel.recv_exit_status()
+            
+            if exit_code != 0:
+                error = stderr.read().decode('utf-8', errors='ignore').strip()
+                return {'error': error, 'lines': [], 'chunk': self.chunk_count}
+            
+            output = stdout.read().decode('utf-8', errors='ignore').strip()
+            lines = [l for l in output.split('\n') if l.strip()]
+            
+            self.chunk_count += 1
+            return {
+                'lines': lines,
+                'count': len(lines),
+                'chunk': self.chunk_count,
+                'timestamp': time.time()
+            }
+        
+        except Exception as e:
+            return {'error': str(e), 'lines': [], 'chunk': self.chunk_count}
+    
+    def start_streaming(self):
+        """Start background reader thread"""
+        if self.reader_thread is not None:
+            return
+        
+        self.stop_event.clear()
+        self.reader_thread = threading.Thread(target=self._stream_worker, daemon=True)
+        self.reader_thread.start()
+    
+    def _stream_worker(self):
+        """Background worker that continuously reads 100-line chunks at 3-second intervals"""
+        while not self.stop_event.is_set():
+            try:
+                chunk_data = self._read_tail_chunk()
+                
+                # Put chunk in queue (blocks if queue full, giving time to consume)
+                try:
+                    self.data_queue.put(chunk_data, timeout=self.chunk_size)
+                except queue.Full:
+                    # Queue full = frontend can't keep up; drop oldest
+                    try:
+                        self.data_queue.get_nowait()
+                    except queue.Empty:
+                        pass
+                    self.data_queue.put(chunk_data, timeout=0.1)
+                
+                # Wait 3 seconds before next chunk (allows memory deallocation)
+                time.sleep(self.chunk_size)
+            
+            except Exception as e:
+                print(f"[StreamWorker] Error: {e}")
+                time.sleep(self.chunk_size)
+    
+    def stream_chunks(self, timeout_seconds=3600):
+        """
+        Generator that yields chunks from queue
+        Called by Flask to stream data to frontend
+        """
+        start_time = time.time()
+        self.start_streaming()
+        
+        try:
+            while True:
+                # Timeout if client disconnects
+                elapsed = time.time() - start_time
+                if elapsed > timeout_seconds:
+                    yield json.dumps({'status': 'timeout'}) + '\n'
+                    break
+                
+                try:
+                    # Get next buffered chunk (with timeout to allow stop checks)
+                    chunk = self.data_queue.get(timeout=4)
+                    
+                    if chunk:
+                        yield json.dumps(chunk) + '\n'
+                        # Flush to client immediately
+                        
+                except queue.Empty:
+                    # No new data yet; send heartbeat to keep connection alive
+                    yield json.dumps({'status': 'waiting'}) + '\n'
+        
+        except GeneratorExit:
+            self.stop()
+        finally:
+            self.stop()
+    
+    def stop(self):
+        """Stop the background reader thread"""
+        self.stop_event.set()
+        if self.reader_thread and self.reader_thread.is_alive():
+            self.reader_thread.join(timeout=2)
+
+# Track active streamers per session
+active_streamers = {}
+
+# ============================================================================
 # HTML TEMPLATES
 # ============================================================================
 
@@ -221,247 +490,112 @@ BASE_TEMPLATE = """
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Orchestrator Manager</title>
+    <script src="https://cdn.tailwindcss.com"></script>
     <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        
-        :root {
-            --color-bg-dark: #0f0f1e;
-            --color-bg-darker: #06060b;
-            --color-card: #1a1a2e;
-            --color-border: #2a2a3e;
-            --color-text: #e0e0e0;
-            --color-text-muted: #a0a0b0;
-            --color-primary: #00d7ff;
-            --color-success: #10b981;
-            --color-danger: #ef4444;
-        }
+        * { margin: 0; padding: 0; box-sizing: border-box; transition: all 0.3s ease-out; }
         
         body {
-            background: linear-gradient(135deg, var(--color-bg-darker) 0%, var(--color-bg-dark) 100%);
-            color: var(--color-text);
+            background: linear-gradient(135deg, #0f172a 0%, #1e293b 50%, #0f172a 100%);
+            color: #e2e8f0;
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            min-height: 100vh;
-            padding: 20px;
         }
         
-        .container { max-width: 1400px; margin: 0 auto; }
+        @keyframes float { 0%, 100% { transform: translateY(0px); } 50% { transform: translateY(-8px); } }
+        @keyframes pulse-glow { 0%, 100% { box-shadow: 0 0 10px rgba(34, 211, 238, 0.5); } 50% { box-shadow: 0 0 20px rgba(34, 211, 238, 0.8); } }
+        @keyframes pulse-error { 0%, 100% { box-shadow: 0 0 10px rgba(239, 68, 68, 0.5); } 50% { box-shadow: 0 0 20px rgba(239, 68, 68, 0.8); } }
+        @keyframes slide-in-top { from { opacity: 0; transform: translateY(-30px); } to { opacity: 1; transform: translateY(0); } }
+        @keyframes bounce-in { 0% { opacity: 0; transform: scale(0.8); } 100% { opacity: 1; transform: scale(1); } }
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
         
-        .nav-bar {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 20px;
-            padding: 15px 20px;
-            background: rgba(0, 215, 255, 0.05);
-            border: 1px solid var(--color-border);
-            border-radius: 12px;
-        }
+        .animate-float { animation: float 3s ease-in-out infinite; }
+        .animate-pulse-glow { animation: pulse-glow 2s ease-in-out infinite; }
+        .animate-pulse-error { animation: pulse-error 1.5s ease-in-out infinite; }
+        .animate-slide-in-top { animation: slide-in-top 0.6s cubic-bezier(0.34, 1.56, 0.64, 1); }
+        .animate-bounce-in { animation: bounce-in 0.5s cubic-bezier(0.34, 1.56, 0.64, 1); }
+        .animate-fade-in { animation: fadeIn 0.6s ease-out; }
         
-        .nav-bar h1 { font-size: 20px; color: var(--color-primary); }
-        .nav-links { display: flex; gap: 10px; flex-wrap: wrap; }
+        .nav-bar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; padding: 16px 20px; background: linear-gradient(135deg, rgba(34, 211, 238, 0.08) 0%, rgba(59, 130, 246, 0.04) 100%); border: 1px solid rgba(34, 211, 238, 0.2); border-radius: 12px; animation: slide-in-top 0.5s; }
+        .nav-bar h1 { font-size: 20px; font-weight: bold; color: #22d3ee; margin: 0; }
+        .nav-links { display: flex; gap: 12px; flex-wrap: wrap; }
+        .nav-btn { padding: 10px 16px; background: rgba(30, 41, 59, 0.7); border: 1px solid rgba(226, 232, 240, 0.15); color: #e2e8f0; border-radius: 8px; cursor: pointer; text-decoration: none; font-size: 12px; font-weight: 600; }
+        .nav-btn:hover { border-color: rgba(34, 211, 238, 0.5); color: #22d3ee; box-shadow: 0 8px 16px rgba(34, 211, 238, 0.15); transform: translateY(-2px); }
         
-        .nav-btn {
-            padding: 8px 14px;
-            background: var(--color-card);
-            border: 1px solid var(--color-border);
-            color: var(--color-text);
-            border-radius: 6px;
-            cursor: pointer;
-            text-decoration: none;
-            transition: all 0.3s ease;
-            font-size: 12px;
-            font-weight: 500;
-        }
-        .nav-btn:hover { border-color: var(--color-primary); color: var(--color-primary); }
+        .header { display: flex; justify-content: space--between; align-items: center; margin-bottom: 30px; padding: 25px; background: linear-gradient(135deg, rgba(34, 211, 238, 0.1) 0%, rgba(59, 130, 246, 0.05) 100%); border: 1px solid rgba(34, 211, 238, 0.2); border-radius: 14px; animation: slide-in-top; }
+        .header h2 { font-size: 28px; font-weight: bold; color: #22d3ee; margin: 0; }
+        .header-stats { display: flex; gap: 20px; flex-wrap: wrap; }
+        .stat { display: flex; flex-direction: column; align-items: center; padding: 15px 20px; background: rgba(30, 41, 59, 0.6); border-radius: 10px; border: 1px solid rgba(226, 232, 240, 0.1); }
+        .stat:hover { background: rgba(30, 41, 59, 0.8); border-color: rgba(34, 211, 238, 0.3); box-shadow: 0 10px 20px rgba(34, 211, 238, 0.1); }
+        .stat-value { font-size: 32px; font-weight: 700; color: #22d3ee; }
+        .stat-label { font-size: 11px; color: #94a3b8; margin-top: 8px; text-transform: uppercase; letter-spacing: 0.05em; }
         
-        .header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 30px;
-            padding: 20px;
-            background: rgba(0, 215, 255, 0.05);
-            border: 1px solid var(--color-border);
-            border-radius: 12px;
-        }
-        .header h2 { font-size: 24px; color: var(--color-primary); }
-        .header-stats { display: flex; gap: 20px; }
-        .stat { display: flex; flex-direction: column; align-items: center; }
-        .stat-value { font-size: 24px; font-weight: 700; color: var(--color-primary); }
-        .stat-label { font-size: 12px; color: var(--color-text-muted); }
+        .controls { display: flex; gap: 12px; margin-bottom: 24px; flex-wrap: wrap; animation: fadeIn 0.6s; }
+        .search-box { flex: 1; min-width: 200px; padding: 12px 16px; background: rgba(30, 41, 59, 0.7); border: 1px solid rgba(226, 232, 240, 0.15); border-radius: 8px; color: #e2e8f0; font-size: 14px; }
+        .search-box:focus { outline: none; border-color: rgba(34, 211, 238, 0.6); box-shadow: 0 0 12px rgba(34, 211, 238, 0.2); }
+        .filter-btn { padding: 10px 16px; background: rgba(30, 41, 59, 0.6); border: 1px solid rgba(226, 232, 240, 0.15); color: #cbd5e1; border-radius: 8px; cursor: pointer; font-size: 12px; font-weight: 600; }
+        .filter-btn:hover { border-color: rgba(34, 211, 238, 0.4); color: #22d3ee; }
+        .filter-btn.active { background: rgba(34, 211, 238, 0.8); color: #001217; border-color: rgba(34, 211, 238, 0.8); box-shadow: 0 10px 20px rgba(34, 211, 238, 0.2); font-weight: 700; }
         
-        .controls { display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap; }
+        .machines-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 16px; margin-bottom: 30px; }
+        .machine-card { background: linear-gradient(135deg, rgba(15, 23, 42, 0.9) 0%, rgba(30, 41, 59, 0.5) 100%); border: 1px solid rgba(226, 232, 240, 0.1); border-radius: 12px; padding: 20px; animation: fadeIn 0.5s; cursor: pointer; }
+        .machine-card:hover { transform: translateY(-6px) scale(1.02); border-color: rgba(34, 211, 238, 0.6); box-shadow: 0 20px 40px rgba(34, 211, 238, 0.15); background: linear-gradient(135deg, rgba(15, 23, 42, 1) 0%, rgba(30, 41, 59, 0.8) 100%); }
+        .machine-card.online { border-color: rgba(16, 185, 129, 0.3); background: linear-gradient(135deg, rgba(15, 23, 42, 0.9) 0%, rgba(5, 80, 60, 0.2) 100%); }
+        .machine-card.offline { border-color: rgba(239, 68, 68, 0.3); background: linear-gradient(135deg, rgba(15, 23, 42, 0.9) 0%, rgba(80, 5, 5, 0.2) 100%); }
         
-        .search-box {
-            flex: 1;
-            min-width: 200px;
-            padding: 12px;
-            background: var(--color-card);
-            border: 1px solid var(--color-border);
-            border-radius: 8px;
-            color: var(--color-text);
-        }
-        .search-box:focus { outline: none; border-color: var(--color-primary); }
+        .machine-status { display: inline-flex; align-items: center; gap: 8px; margin-bottom: 12px; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; }
+        .machine-status.status-online { color: #10b981; }
+        .machine-status.status-online .status-indicator { background: #10b981; box-shadow: 0 0 6px rgba(16, 185, 129, 0.8); animation: pulse-glow 2s; }
+        .machine-status.status-offline { color: #ef4444; animation: pulse-error 1.5s; }
+        .status-indicator { width: 8px; height: 8px; border-radius: 50%; animation: float 3s; }
         
-        .filter-btn {
-            padding: 10px 14px;
-            background: var(--color-card);
-            border: 1px solid var(--color-border);
-            border-radius: 8px;
-            color: var(--color-text);
-            cursor: pointer;
-            transition: all 0.3s ease;
-            font-weight: 500;
-            font-size: 12px;
-        }
-        .filter-btn:hover { border-color: var(--color-primary); color: var(--color-primary); }
-        .filter-btn.active { background: var(--color-primary); color: var(--color-bg-dark); }
+        .machine-hostname { font-size: 18px; font-weight: 700; color: #e2e8f0; margin-bottom: 12px; }
+        .machine-card:hover .machine-hostname { color: #22d3ee; }
+        .machine-details { padding: 12px 0; border-top: 1px solid rgba(226, 232, 240, 0.1); border-bottom: 1px solid rgba(226, 232, 240, 0.1); margin-bottom: 12px; }
+        .detail-row { display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 8px; }
+        .detail-label { color: #94a3b8; }
+        .detail-value { color: #22d3ee; font-family: 'Monaco', 'Courier New', monospace; font-weight: 600; }
         
-        .machines-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
-            gap: 16px;
-            margin-bottom: 30px;
-        }
+        .machine-actions { display: flex; gap: 8px; margin-top: 12px; }
+        .action-btn { flex: 1; padding: 10px 12px; background: rgba(34, 211, 238, 0.15); border: 1px solid rgba(34, 211, 238, 0.5); color: #22d3ee; border-radius: 8px; cursor: pointer; font-size: 12px; font-weight: 700; text-decoration: none; text-align: center; text-transform: uppercase; letter-spacing: 0.05em; }
+        .action-btn:hover { background: rgba(34, 211, 238, 0.3); border-color: rgba(34, 211, 238, 0.8); box-shadow: 0 10px 20px rgba(34, 211, 238, 0.2); transform: translateY(-2px) scale(1.05); }
+        .action-btn:active { transform: translateY(0) scale(0.98); }
         
-        .machine-card {
-            background: var(--color-card);
-            border: 1px solid var(--color-border);
-            border-radius: 12px;
-            padding: 20px;
-            transition: all 0.3s ease;
-        }
-        .machine-card:hover {
-            border-color: var(--color-primary);
-            transform: translateY(-4px);
-            box-shadow: 0 8px 32px rgba(0, 215, 255, 0.15);
-        }
+        .log-container { background: linear-gradient(135deg, rgba(15, 23, 42, 0.8) 0%, rgba(30, 41, 59, 0.5) 100%); border: 1px solid rgba(226, 232, 240, 0.1); border-radius: 14px; padding: 25px; margin-bottom: 24px; animation: fadeIn 0.6s; }
+        .log-container h3 { margin: 0 0 16px 0; font-size: 18px; font-weight: 700; color: #22d3ee; text-transform: uppercase; letter-spacing: 0.05em; }
+        .log-list { list-style: none; display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; }
+        .log-item { padding: 14px; background: rgba(34, 211, 238, 0.1); border: 1px solid rgba(34, 211, 238, 0.4); border-radius: 8px; color: #22d3ee; font-weight: 700; text-align: center; text-decoration: none; cursor: pointer; font-size: 12px; display: block; }
+        .log-item:hover { background: rgba(34, 211, 238, 0.2); border-color: rgba(34, 211, 238, 0.8); box-shadow: 0 10px 20px rgba(34, 211, 238, 0.15); transform: translateY(-3px); }
         
-        .machine-status {
-            display: inline-flex;
-            align-items: center;
-            gap: 6px;
-            margin-bottom: 12px;
-            font-size: 12px;
-            font-weight: 600;
-        }
-        .status-indicator { width: 8px; height: 8px; border-radius: 50%; }
-        .status-online .status-indicator { background: var(--color-success); box-shadow: 0 0 4px var(--color-success); }
-        .status-offline .status-indicator { background: var(--color-danger); }
-        .status-online { color: var(--color-success); }
-        .status-offline { color: var(--color-danger); }
+        pre { background: #0f172a; color: #cbd5e1; padding: 16px; border-radius: 8px; border: 1px solid rgba(226, 232, 240, 0.1); overflow-x: auto; overflow-y: auto; max-height: 500px; margin-bottom: 16px; font-family: 'Monaco', 'Courier New', monospace; font-size: 13px; line-height: 1.6; white-space: pre-wrap; word-break: break-all; }
         
-        .machine-hostname { font-size: 18px; font-weight: 700; margin-bottom: 8px; }
+        #loginModal, #messageModal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0, 0, 0, 0.7); z-index: 1000; align-items: center; justify-content: center; backdrop-filter: blur(4px); }
+        #loginModal:target, #loginModal.show, #messageModal:target, #messageModal.show { display: flex; animation: bounce-in 0.5s; }
+        #loginModal > div, #messageModal > div { background: linear-gradient(135deg, rgba(15, 23, 42, 0.95) 0%, rgba(30, 41, 59, 0.8) 100%); border: 2px solid rgba(34, 211, 238, 0.5); border-radius: 14px; padding: 32px; max-width: 400px; width: 90%; box-shadow: 0 20px 60px rgba(34, 211, 238, 0.2); }
+        #loginModal h3, #messageModal h3 { margin: 0 0 24px 0; font-size: 20px; font-weight: 700; color: #22d3ee; }
+        #messageIcon { font-size: 48px; margin-bottom: 16px; }
         
-        .detail-row { display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 6px; }
-        .detail-label { color: var(--color-text-muted); }
-        .detail-value { color: var(--color-primary); font-family: monospace; font-weight: 600; }
+        .alert { padding: 16px; margin-bottom: 20px; border-radius: 8px; border: 1px solid; animation: bounce-in 0.5s; }
+        .alert-success { background: rgba(16, 185, 129, 0.1); border-color: rgba(16, 185, 129, 0.5); color: #10b981; }
         
-        .machine-actions {
-            margin-top: 16px;
-            padding-top: 16px;
-            border-top: 1px solid var(--color-border);
-            display: flex;
-            gap: 8px;
-        }
+        input[type="text"], input[type="password"], input[type="datetime-local"], select, textarea { width: 100%; padding: 12px; margin-top: 6px; background: rgba(15, 23, 42, 0.8); border: 1px solid rgba(226, 232, 240, 0.15); color: #e2e8f0; border-radius: 8px; font-size: 14px; color-scheme: dark; }
+        input:focus, select:focus, textarea:focus { outline: none; border-color: rgba(34, 211, 238, 0.6); box-shadow: 0 0 16px rgba(34, 211, 238, 0.2); background: rgba(15, 23, 42, 0.9); }
+        label { display: block; font-size: 12px; color: #94a3b8; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4px; }
         
-        .action-btn {
-            flex: 1;
-            padding: 8px 12px;
-            background: rgba(0, 215, 255, 0.1);
-            border: 1px solid var(--color-primary);
-            color: var(--color-primary);
-            border-radius: 6px;
-            cursor: pointer;
-            font-size: 12px;
-            font-weight: 600;
-            transition: all 0.3s ease;
-            text-decoration: none;
-            text-align: center;
-        }
-        .action-btn:hover { background: rgba(0, 215, 255, 0.2); }
+        .back-link { display: inline-block; margin-bottom: 20px; margin-right: 10px; padding: 10px 16px; background: rgba(30, 41, 59, 0.6); border: 1px solid rgba(226, 232, 240, 0.15); color: #cbd5e1; border-radius: 8px; text-decoration: none; font-weight: 600; font-size: 12px; }
+        .back-link:hover { border-color: rgba(34, 211, 238, 0.5); color: #22d3ee; box-shadow: 0 8px 16px rgba(34, 211, 238, 0.15); transform: translateY(-2px); }
         
-        .log-container {
-            background: var(--color-card);
-            border: 1px solid var(--color-border);
-            border-radius: 12px;
-            padding: 20px;
-            margin-bottom: 20px;
-        }
-        .log-container h3 { margin-bottom: 15px; color: var(--color-primary); }
-        
-        .log-list {
-            list-style: none;
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-            gap: 10px;
-        }
-        
-        .log-item {
-            padding: 12px;
-            background: rgba(0, 215, 255, 0.1);
-            border: 1px solid var(--color-primary);
-            border-radius: 6px;
-            cursor: pointer;
-            text-decoration: none;
-            color: var(--color-primary);
-            font-weight: 600;
-            text-align: center;
-            transition: all 0.3s ease;
-            display: block;
-        }
-        .log-item:hover { background: rgba(0, 215, 255, 0.2); transform: translateY(-2px); }
-        
-        pre {
-            background: #11111b;
-            color: #a6adc8;
-            padding: 15px;
-            border-radius: 5px;
-            overflow-x: auto;
-            max-height: 700px;
-            overflow-y: auto;
-            border: 1px solid var(--color-border);
-            margin-bottom: 20px;
-            font-family: 'Courier New', monospace;
-            font-size: 12px;
-            line-height: 1.6;
-            white-space: pre-wrap;
-            word-break: break-all;
-        }
-        
-        .alert { padding: 15px; margin-bottom: 20px; border-radius: 6px; border: 1px solid; }
-        .alert-success { background: rgba(16, 185, 129, 0.1); border-color: var(--color-success); color: var(--color-success); }
-        
-        .back-link {
-            display: inline-block;
-            margin-bottom: 20px;
-            margin-right: 10px;
-            padding: 8px 14px;
-            background: var(--color-card);
-            border: 1px solid var(--color-border);
-            color: var(--color-text);
-            border-radius: 6px;
-            text-decoration: none;
-            font-weight: 500;
-            transition: all 0.3s ease;
-        }
-        .back-link:hover { border-color: var(--color-primary); color: var(--color-primary); }
-        
-        input[type="datetime-local"] {
-            color-scheme: dark;
-        }
+        .container { max-width: 1400px; margin: 0 auto; padding: 1.5rem; }
     </style>
 </head>
-<body>
-    <div class="container">
+<body class="bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 text-gray-100 min-h-screen">
+    <div class="container mx-auto max-w-7xl px-4 py-6">
         {% if session.get('target_ip') %}
-        <div class="nav-bar">
-            <h1>🌐 Orchestrator Manager</h1>
-            <div class="nav-links">
-                <a href="{{ url_for('machines') }}" class="nav-btn">🏠 Machines</a>
-                <a href="{{ url_for('dashboard') }}" class="nav-btn">📁 Logs</a>
-                <span class="nav-btn">📍 {{ session.get('target_ip') }}</span>
-                <a href="{{ url_for('logout') }}" class="nav-btn">🚪 Logout</a>
+        <div class="flex justify-between items-center mb-6 p-5 bg-cyan-500/10 border border-slate-700 rounded-xl animate-slide-in-top hover:border-cyan-400/50">
+            <h1 class="text-2xl font-bold text-cyan-400">🌐 Orchestrator Manager</h1>
+            <div class="flex gap-3 flex-wrap">
+                <a href="{{ url_for('machines') }}" class="px-3 py-2 bg-slate-800 border border-slate-600 rounded-lg text-gray-100 text-sm font-medium hover:border-cyan-400 hover:text-cyan-400 hover:shadow-lg hover:shadow-cyan-500/20">🏠 Machines</a>
+                <a href="{{ url_for('dashboard') }}" class="px-3 py-2 bg-slate-800 border border-slate-600 rounded-lg text-gray-100 text-sm font-medium hover:border-cyan-400 hover:text-cyan-400 hover:shadow-lg hover:shadow-cyan-500/20">📁 Logs</a>
+                <span class="px-3 py-2 bg-slate-800 border border-slate-600 rounded-lg text-gray-100 text-sm font-medium">📍 {{ session.get('target_ip') }}</span>
+                <a href="{{ url_for('logout') }}" class="px-3 py-2 bg-slate-800 border border-red-600/50 rounded-lg text-red-400 text-sm font-medium hover:border-red-400 hover:bg-red-500/10 hover:shadow-lg hover:shadow-red-500/20">🚪 Logout</a>
             </div>
         </div>
         {% endif %}
@@ -469,7 +603,7 @@ BASE_TEMPLATE = """
         {% with messages = get_flashed_messages() %}
             {% if messages %}
                 {% for message in messages %}
-                    <div class="alert alert-success">{{ message }}</div>
+                    <div class="mb-5 p-4 bg-emerald-500/10 border border-emerald-500 text-emerald-400 rounded-lg animate-fade-in-scale">✓ {{ message }}</div>
                 {% endfor %}
             {% endif %}
         {% endwith %}
@@ -493,7 +627,7 @@ MACHINES_TEMPLATE = BASE_TEMPLATE.replace('{% block content %}{% endblock %}', "
             <input type="hidden" id="modalHostname" name="hostname">
             <div style="margin-bottom: 15px;">
                 <label style="color: var(--color-text-muted); font-size: 12px;">Username</label>
-                <input type="text" id="modalUsername" placeholder="ubuntu" style="width: 100%; padding: 10px; background: var(--color-bg-dark); border: 1px solid var(--color-border); color: var(--color-text); border-radius: 6px; margin-top: 5px;">
+                <input type="text" id="modalUsername" placeholder="ubuntu" value="{{ default_username }}" style="width: 100%; padding: 10px; background: var(--color-bg-dark); border: 1px solid var(--color-border); color: var(--color-text); border-radius: 6px; margin-top: 5px;">
             </div>
             <div style="margin-bottom: 20px;">
                 <label style="color: var(--color-text-muted); font-size: 12px;">Password</label>
@@ -648,6 +782,117 @@ MACHINES_TEMPLATE = BASE_TEMPLATE.replace('{% block content %}{% endblock %}', "
             submitLogin();
         }
     });
+    
+    // ========= AUTO-REFRESH MONITORING =========
+    let lastUpdateTime = 0;
+    const REFRESH_INTERVAL = 5000; // Poll every 5 seconds
+    
+    async function refreshMachinesList() {
+        try {
+            const response = await fetch('/api/machines');
+            const data = await response.json();
+            
+            if (!data.success) return;
+            
+            // Check if data is newer than what we're displaying
+            if (data.timestamp <= lastUpdateTime) return;
+            lastUpdateTime = data.timestamp;
+            
+            const machines = data.machines;
+            const container = document.querySelector('.machines-grid');
+            
+            // Update stats in header (never triggers reflow)
+            const statElements = document.querySelectorAll('.stat-value');
+            if (statElements.length >= 3) {
+                statElements[0].textContent = data.total;
+                statElements[1].textContent = data.online;
+                statElements[2].textContent = data.offline;
+            }
+            
+            // Update machine cards IN-PLACE (no tile shifting)
+            const existingCards = new Map();
+            document.querySelectorAll('.machine-card').forEach(card => {
+                const ipElement = card.querySelector('.machine-details .detail-value');
+                if (ipElement) {
+                    existingCards.set(ipElement.textContent.trim(), card);
+                }
+            });
+            
+            const machineIps = new Set();
+            
+            machines.forEach(machine => {
+                machineIps.add(machine.ip);
+                const machineClass = machine.online ? 'online' : 'offline';
+                const statusText = machine.online ? 'Online' : 'Offline';
+                const statusClass = machine.online ? 'status-online' : 'status-offline';
+                
+                const existingCard = existingCards.get(machine.ip);
+                
+                if (existingCard) {
+                    // Update existing card in-place
+                    existingCard.className = `machine-card ${machineClass}`;
+                    
+                    const statusDiv = existingCard.querySelector('.machine-status');
+                    if (statusDiv) {
+                        statusDiv.className = `machine-status ${statusClass}`;
+                        statusDiv.innerHTML = `<span class="status-indicator"></span>${statusText}`;
+                    }
+                    
+                    const hostnameDiv = existingCard.querySelector('.machine-hostname');
+                    if (hostnameDiv) {
+                        hostnameDiv.textContent = machine.hostname;
+                    }
+                    
+                    const osValue = existingCard.querySelector('.machine-details .detail-row:last-child .detail-value');
+                    if (osValue) {
+                        osValue.textContent = machine.os;
+                    }
+                } else {
+                    // Add new machine card
+                    const newCard = document.createElement('div');
+                    newCard.className = `machine-card ${machineClass}`;
+                    newCard.innerHTML = `
+                        <div class="machine-status ${statusClass}">
+                            <span class="status-indicator"></span>
+                            ${statusText}
+                        </div>
+                        <div class="machine-hostname">${machine.hostname}</div>
+                        <div class="machine-details">
+                            <div class="detail-row">
+                                <span class="detail-label">IP:</span>
+                                <span class="detail-value">${machine.ip}</span>
+                            </div>
+                            <div class="detail-row">
+                                <span class="detail-label">OS:</span>
+                                <span class="detail-value">${machine.os}</span>
+                            </div>
+                        </div>
+                        <div class="machine-actions">
+                            <button onclick="openLoginModal('${machine.ip}', '${machine.hostname}')" class="action-btn">🔐 Login</button>
+                        </div>
+                    `;
+                    container.appendChild(newCard);
+                }
+            });
+            
+            // Remove cards for machines no longer in the list
+            existingCards.forEach((card, ip) => {
+                if (!machineIps.has(ip)) {
+                    card.remove();
+                }
+            });
+            
+        } catch (error) {
+            console.error('Error refreshing machines:', error);
+        }
+    }
+    
+    // Start auto-refresh polling
+    console.log('[Monitor] Starting auto-refresh polling (5 second interval)');
+    setInterval(refreshMachinesList, REFRESH_INTERVAL);
+    
+    // Initial refresh on page load
+    refreshMachinesList();
 </script>
 """)
 
@@ -727,22 +972,94 @@ DASHBOARD_TEMPLATE = BASE_TEMPLATE.replace('{% block content %}{% endblock %}', 
     {% endif %}
 </div>
 
-<!-- JSON / Gateway Logs -->
+<!-- JSON / Gateway Logs - Real-time Browser & Time-based Search -->
 <div class="log-container">
-    <h3>📊 Gateway JSON Logs (json_logs/)</h3>
-    <p style="color: var(--color-text-muted); font-size: 12px; margin-bottom: 12px;">Search by time range (epoch-based) or stream live</p>
-    {% if gateway_files %}
-    <ul class="log-list">
-        {% for file in gateway_files %}
-            <li style="display: flex; gap: 6px;">
-                <a href="{{ url_for('view_gateway_file', filename=file) }}" class="log-item" style="flex: 1;">📊 {{ file }}</a>
-                <a href="{{ url_for('live_tail', filename='json_logs/' + file) }}" class="log-item" style="flex: 0; min-width: 44px; padding: 12px 8px;" title="Live Tail">📺</a>
-            </li>
-        {% endfor %}
-    </ul>
-    {% else %}
-    <p style="color: var(--color-text-muted); text-align: center; padding: 20px;">ℹ️ No log files found in json_logs/</p>
-    {% endif %}
+    <h3>📊 JSON Log Browser - Real-time & Time-based Search</h3>
+    <p style="color: var(--color-text-muted); font-size: 12px; margin-bottom: 15px;">Browse json_logs from /opt/go-ble-orchestrator/logs/json_logs or /opt/go-ble-orchestrator/json_logs (for older versions)</p>
+    
+    <!-- Log Directory Selection & File List -->
+    <div style="background: rgba(0, 215, 255, 0.05); padding: 15px; border-radius: 8px; border: 1px solid var(--color-border); margin-bottom: 15px;">
+        <div style="display: flex; gap: 10px; margin-bottom: 15px; flex-wrap: wrap;">
+            <button onclick="loadJsonLogsList()" class="action-btn" style="padding: 10px 20px; min-width: 180px;">📂 Load Available Logs</button>
+            <button onclick="toggleJsonRealtimeRefresh()" id="realtimeToggleBtn" class="action-btn" style="padding: 10px 20px; min-width: 180px; border-color: #6b7280; color: #cbd5e1;">⏸️ Start Real-time (3s)</button>
+        </div>
+        
+        <div id="jsonLogsLoadingMsg" style="display: none; text-align: center; padding: 15px; color: var(--color-text-muted);">
+            <div style="font-size: 16px; margin-bottom: 8px;">⏳</div>
+            <div>Loading logs from directories...</div>
+        </div>
+        
+        <div id="jsonLogsContainer" style="display: none;">
+            <div style="margin-bottom: 12px;">
+                <h4 style="color: var(--color-primary); margin-bottom: 8px;">📁 /opt/go-ble-orchestrator/logs/json_logs</h4>
+                <div id="logsDir" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 8px; padding: 10px 0;"></div>
+            </div>
+            <div>
+                <h4 style="color: var(--color-primary); margin-bottom: 8px;">📁 /opt/go-ble-orchestrator/json_logs (legacy)</h4>
+                <div id="rootDir" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 8px; padding: 10px 0;"></div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Real-time Log Display -->
+    <div id="realtimeContainer" style="display: none; background: rgba(0, 215, 255, 0.05); padding: 15px; border-radius: 8px; border: 1px solid var(--color-border); margin-bottom: 15px;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+            <h4 style="color: var(--color-primary);">🔴 Real-time: <span id="realtimeFileName" style="font-family: monospace; font-size: 12px;"></span></h4>
+            <div style="display: flex; gap: 8px;">
+                <span id="realtimeIndicator" style="width: 10px; height: 10px; background: #ef4444; border-radius: 50%; display: inline-block;"></span>
+                <span id="realtimeStatus" style="font-size: 12px; color: var(--color-text-muted);">Stopped</span>
+            </div>
+        </div>
+        <pre id="realtimeLog" style="height: 400px; overflow-y: auto; font-size: 12px;">Waiting to start real-time streaming...</pre>
+    </div>
+    
+    <!-- Time-based Search -->
+    <div style="background: rgba(0, 215, 255, 0.05); padding: 15px; border-radius: 8px; border: 1px solid var(--color-border); margin-bottom: 15px;">
+        <h4 style="color: var(--color-primary); margin-bottom: 15px;">🕐 Time-based Log Search</h4>
+        <p style="color: var(--color-text-muted); font-size: 12px; margin-bottom: 12px;">Format: dd/mm/yyyy hh:mm:ss - Searches for timestamps in JSON "timestamp1" field</p>
+        
+        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; margin-bottom: 15px;">
+            <div>
+                <label style="color: var(--color-text-muted); font-size: 12px; display: block; margin-bottom: 6px;">📁 Select Log File</label>
+                <select id="jsonFileSelect" style="width: 100%; padding: 10px; background: rgba(15, 23, 42, 0.8); border: 1px solid rgba(226, 232, 240, 0.15); color: #e2e8f0; border-radius: 8px; font-size: 13px;">
+                    <option value="">-- Choose a log file --</option>
+                </select>
+            </div>
+            <div>
+                <label style="color: var(--color-text-muted); font-size: 12px; display: block; margin-bottom: 6px;">📅 From (dd/mm/yyyy hh:mm:ss)</label>
+                <input type="text" id="fromDateTime" placeholder="01/04/2025 10:30:00" style="width: 100%; padding: 10px; background: rgba(15, 23, 42, 0.8); border: 1px solid rgba(226, 232, 240, 0.15); color: #e2e8f0; border-radius: 8px; font-size: 13px;">
+            </div>
+            <div>
+                <label style="color: var(--color-text-muted); font-size: 12px; display: block; margin-bottom: 6px;">📅 To (dd/mm/yyyy hh:mm:ss)</label>
+                <input type="text" id="toDateTime" placeholder="01/04/2025 11:30:00" style="width: 100%; padding: 10px; background: rgba(15, 23, 42, 0.8); border: 1px solid rgba(226, 232, 240, 0.15); color: #e2e8f0; border-radius: 8px; font-size: 13px;">
+            </div>
+        </div>
+        
+        <div id="epochPreviewJson" style="font-size: 11px; color: var(--color-text-muted); margin-bottom: 12px; font-family: monospace; min-height: 18px;"></div>
+        
+        <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+            <button onclick="searchJsonLogsByTime()" class="action-btn" style="padding: 10px 24px; min-width: 140px;">🔍 Search Logs</button>
+            <button onclick="setLastNJsonMinutes(15)" class="action-btn" style="padding: 10px 16px; min-width: 100px;">Last 15 min</button>
+            <button onclick="setLastNJsonMinutes(60)" class="action-btn" style="padding: 10px 16px; min-width: 100px;">Last 1 hour</button>
+            <button onclick="setLastNJsonMinutes(360)" class="action-btn" style="padding: 10px 16px; min-width: 100px;">Last 6 hours</button>
+        </div>
+    </div>
+    
+    <!-- Search Results -->
+    <div id="jsonSearchResults" style="display: none; background: rgba(0, 215, 255, 0.05); padding: 15px; border-radius: 8px; border: 1px solid var(--color-border);">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+            <h4 style="color: var(--color-primary);">📋 Search Results <span id="jsonResultCount" style="font-size: 12px; color: var(--color-text-muted);"></span></h4>
+            <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--color-text-muted); cursor: pointer;">
+                <input type="checkbox" id="prettyJsonFormat" onchange="renderJsonResults()"> Pretty-print JSON
+            </label>
+        </div>
+        <pre id="jsonResultsLog" style="height: 500px; overflow-y: auto;"></pre>
+    </div>
+    
+    <div id="jsonSearchLoading" style="display: none; text-align: center; padding: 30px; color: var(--color-text-muted);">
+        <div style="font-size: 32px; margin-bottom: 10px;">⏳</div>
+        <div>Searching logs...</div>
+    </div>
 </div>
 
 <style>
@@ -878,6 +1195,347 @@ DASHBOARD_TEMPLATE = BASE_TEMPLATE.replace('{% block content %}{% endblock %}', 
         } catch (err) {
             setupLog.innerHTML += `\\n<span style="color:#ef4444">[ERROR] ${escapeHtml(err.message)}</span>`;
         }
+    }
+    
+    // ========= JSON LOG BROWSER =========
+    let jsonLogsData = { logs_dir: [], root_dir: [] };
+    let realtimeIntervalId = null;
+    let currentRealtimeFile = null;
+    let currentRealtimeLocation = null;
+    let jsonRawLines = [];
+    
+    // Update epoch preview when times change
+    document.getElementById('fromDateTime').addEventListener('change', updateJsonEpochPreview);
+    document.getElementById('toDateTime').addEventListener('change', updateJsonEpochPreview);
+    
+    function escapeHtml(text) {
+        return String(text).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]));
+    }
+    
+    function updateJsonEpochPreview() {
+        const from = document.getElementById('fromDateTime').value;
+        const to = document.getElementById('toDateTime').value;
+        const preview = document.getElementById('epochPreviewJson');
+        if (from && to) {
+            const fromEpoch = dateStringToEpoch(from);
+            const toEpoch = dateStringToEpoch(to);
+            if (fromEpoch && toEpoch) {
+                preview.textContent = `Epoch range: ${fromEpoch} → ${toEpoch} (seconds)`;
+            }
+        } else {
+            preview.textContent = '';
+        }
+    }
+    
+    function dateStringToEpoch(dateStr) {
+        // Parse: dd/mm/yyyy hh:mm:ss → epoch seconds
+        const match = dateStr.match(/^(\\d{2})\\/(\\d{2})\\/(\\d{4})\\s+(\\d{2}):(\\d{2}):(\\d{2})$/);
+        if (!match) return null;
+        
+        const [, day, month, year, hours, minutes, seconds] = match;
+        const date = new Date(year, month - 1, day, hours, minutes, seconds, 0);
+        return Math.floor(date.getTime() / 1000); // Convert to seconds
+    }
+    
+    function setLastNJsonMinutes(minutes) {
+        const now = new Date();
+        const past = new Date(now.getTime() - minutes * 60 * 1000);
+        
+        document.getElementById('fromDateTime').value = formatDateForInput(past);
+        document.getElementById('toDateTime').value = formatDateForInput(now);
+        updateJsonEpochPreview();
+    }
+    
+    function formatDateForInput(date) {
+        const day = String(date.getDate()).padStart(2, '0');
+        const month = String(date.getMonth() + 1).padStart(2, '0');
+        const year = date.getFullYear();
+        const hours = String(date.getHours()).padStart(2, '0');
+        const minutes = String(date.getMinutes()).padStart(2, '0');
+        const seconds = String(date.getSeconds()).padStart(2, '0');
+        return `${day}/${month}/${year} ${hours}:${minutes}:${seconds}`;
+    }
+    
+    async function loadJsonLogsList() {
+        document.getElementById('jsonLogsLoadingMsg').style.display = 'block';
+        document.getElementById('jsonLogsContainer').style.display = 'none';
+        
+        try {
+            const res = await fetch('/api/json-logs/list');
+            const data = await res.json();
+            
+            if (!data.success) {
+                alert('Error loading logs: ' + (data.error || 'Unknown error'));
+                document.getElementById('jsonLogsLoadingMsg').style.display = 'none';
+                return;
+            }
+            
+            jsonLogsData = data.logs;
+            
+            // Populate logs directory
+            const logsDirDiv = document.getElementById('logsDir');
+            logsDirDiv.innerHTML = '';
+            if (jsonLogsData.logs_dir.length > 0) {
+                jsonLogsData.logs_dir.forEach(file => {
+                    const btn = document.createElement('button');
+                    btn.className = 'action-btn';
+                    btn.style.padding = '8px 12px';
+                    btn.textContent = file;
+                    btn.onclick = () => startRealtimeStream('logs', file);
+                    logsDirDiv.appendChild(btn);
+                    
+                    // Also add to search select
+                    const option = document.createElement('option');
+                    option.value = JSON.stringify({location: 'logs', file: file});
+                    option.textContent = `${file} (from logs/json_logs)`;
+                    document.getElementById('jsonFileSelect').appendChild(option);
+                });
+            } else {
+                logsDirDiv.innerHTML = '<span style="color: var(--color-text-muted); font-size: 12px;">No logs found</span>';
+            }
+            
+            // Populate root directory
+            const rootDirDiv = document.getElementById('rootDir');
+            rootDirDiv.innerHTML = '';
+            if (jsonLogsData.root_dir.length > 0) {
+                jsonLogsData.root_dir.forEach(file => {
+                    const btn = document.createElement('button');
+                    btn.className = 'action-btn';
+                    btn.style.padding = '8px 12px';
+                    btn.textContent = file;
+                    btn.onclick = () => startRealtimeStream('root', file);
+                    rootDirDiv.appendChild(btn);
+                    
+                    // Also add to search select
+                    const option = document.createElement('option');
+                    option.value = JSON.stringify({location: 'root', file: file});
+                    option.textContent = `${file} (from json_logs)`;
+                    document.getElementById('jsonFileSelect').appendChild(option);
+                });
+            } else {
+                rootDirDiv.innerHTML = '<span style="color: var(--color-text-muted); font-size: 12px;">No logs found</span>';
+            }
+            
+            document.getElementById('jsonLogsLoadingMsg').style.display = 'none';
+            document.getElementById('jsonLogsContainer').style.display = 'block';
+        } catch (err) {
+            alert('Error: ' + err.message);
+            document.getElementById('jsonLogsLoadingMsg').style.display = 'none';
+        }
+    }
+    
+    function startRealtimeStream(location, filename) {
+        currentRealtimeFile = filename;
+        currentRealtimeLocation = location;
+        document.getElementById('realtimeFileName').textContent = `${location}/${filename}`;
+        document.getElementById('realtimeContainer').style.display = 'block';
+        document.getElementById('realtimeLog').innerHTML = '💡 Real-time streaming enabled (3s refresh)\\n';
+        document.getElementById('realtimeIndicator').style.background = '#10b981';
+        document.getElementById('realtimeStatus').textContent = 'Running';
+        toggleJsonRealtimeRefresh();
+    }
+    
+    function toggleJsonRealtimeRefresh() {
+        if (!currentRealtimeFile) {
+            alert('Please select a log file first by clicking it in the list above');
+            return;
+        }
+        
+        if (realtimeIntervalId) {
+            clearInterval(realtimeIntervalId);
+            realtimeIntervalId = null;
+            document.getElementById('realtimeToggleBtn').textContent = '▶️ Start Real-time (3s)';
+            document.getElementById('realtimeToggleBtn').style.borderColor = '#6b7280';
+            document.getElementById('realtimeToggleBtn').style.color = '#cbd5e1';
+            document.getElementById('realtimeIndicator').style.background = '#ef4444';
+            document.getElementById('realtimeStatus').textContent = 'Stopped';
+            return;
+        }
+        
+        // Start buffered real-time streaming (3-second chunks from backend)
+        document.getElementById('realtimeToggleBtn').textContent = '⏸️ Stop Real-time';
+        document.getElementById('realtimeToggleBtn').style.borderColor = '#10b981';
+        document.getElementById('realtimeToggleBtn').style.color = '#10b981';
+        
+        streamBufferedLogs();
+    }
+    
+    async function streamBufferedLogs() {
+        // Stream JSON logs using buffered 3-second chunks
+        // Backend pre-fetches next chunk while streaming current
+        // Prevents memory bloat and webpage lag
+        try {
+            const log = document.getElementById('realtimeLog');
+            log.innerHTML = '🔴 Connecting to buffered stream (3s chunks)...\\n';
+            
+            const url = `/api/json-logs/${currentRealtimeLocation}/${encodeURIComponent(currentRealtimeFile)}/live-tail`;
+            const response = await fetch(url);
+            
+            if (!response.ok) {
+                log.innerHTML += `\\n<span style="color: #ef4444">[ERROR] Status ${response.status}: ${response.statusText}</span>\\n`;
+                return;
+            }
+            
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+            let chunkNumber = 0;
+            
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split('\\n');
+                
+                // Keep last incomplete line in buffer
+                buffer = lines.pop() || '';
+                
+                for (const line of lines) {
+                    if (!line.trim()) continue;
+                    
+                    try {
+                        const chunk = JSON.parse(line);
+                        chunkNumber++;
+                        
+                        // Handle different chunk types
+                        if (chunk.error) {
+                            log.innerHTML += `\\n<span style="color: #ef4444">[CHUNK ${chunkNumber}] ERROR: ${escapeHtml(chunk.error)}</span>\\n`;
+                        } else if (chunk.status === 'waiting') {
+                            // Backend still reading, show heartbeat
+                            log.innerHTML += `·`;
+                            log.scrollTop = log.scrollHeight;
+                        } else if (chunk.status === 'timeout') {
+                            log.innerHTML += `\\n<span style="color: #f59e0b">[INFO] Stream timeout - session limit reached</span>\\n`;
+                        } else if (chunk.lines) {
+                            // Data chunk received
+                            const lines = chunk.lines || [];
+                            log.innerHTML += `\\n<span style="color: #4b7c59; font-weight: bold;">📊 Chunk #${chunkNumber} (${lines.length} lines @ ${new Date(chunk.timestamp * 1000).toLocaleTimeString()})</span>\\n`;
+                            
+                            lines.forEach((logLine) => {
+                                try {
+                                    const obj = JSON.parse(logLine);
+                                    const ts1 = obj.timestamp1 || obj.timestamp;
+                                    const tsDisplay = ts1 ? new Date(ts1 > 1e12 ? ts1 : ts1 * 1000).toLocaleString() : '';
+                                    log.innerHTML += `<span style="color: #94a3b8; font-size: 11px;">[${tsDisplay}]</span> ${escapeHtml(logLine)}\\n`;
+                                } catch {
+                                    log.innerHTML += escapeHtml(logLine) + '\\n';
+                                }
+                            });
+                            
+                            log.scrollTop = log.scrollHeight;
+                        }
+                    } catch (parseErr) {
+                        // Skip lines that aren't valid JSON
+                        if (line.trim()) {
+                            log.innerHTML += escapeHtml(line) + '\\n';
+                            log.scrollTop = log.scrollHeight;
+                        }
+                    }
+                }
+            }
+            
+            // Final buffer flush
+            if (buffer.trim()) {
+                log.innerHTML += escapeHtml(buffer) + '\\n';
+                log.scrollTop = log.scrollHeight;
+            }
+            
+            log.innerHTML += `\\n<span style="color: #f59e0b">[INFO] Stream completed normally</span>\\n`;
+            document.getElementById('realtimeIndicator').style.background = '#ef4444';
+            document.getElementById('realtimeStatus').textContent = 'Stopped';
+            document.getElementById('realtimeToggleBtn').textContent = '▶️ Start Real-time (3s)';
+            document.getElementById('realtimeToggleBtn').style.borderColor = '#6b7280';
+            document.getElementById('realtimeToggleBtn').style.color = '#cbd5e1';
+            
+        } catch (err) {
+            const log = document.getElementById('realtimeLog');
+            log.innerHTML += `\\n<span style="color: #ef4444">[ERROR] Connection failed: ${escapeHtml(err.message)}</span>\\n`;
+            document.getElementById('realtimeIndicator').style.background = '#ef4444';
+            document.getElementById('realtimeStatus').textContent = 'Error';
+        }
+    }
+    
+    async function searchJsonLogsByTime() {
+        const fileData = document.getElementById('jsonFileSelect').value;
+        if (!fileData) {
+            alert('Please select a log file');
+            return;
+        }
+        
+        const { location, file } = JSON.parse(fileData);
+        const fromTime = document.getElementById('fromDateTime').value;
+        const toTime = document.getElementById('toDateTime').value;
+        
+        if (!fromTime || !toTime) {
+            alert('Please enter both From and To times (dd/mm/yyyy hh:mm:ss)');
+            return;
+        }
+        
+        document.getElementById('jsonSearchLoading').style.display = 'block';
+        document.getElementById('jsonSearchResults').style.display = 'none';
+        
+        try {
+            const res = await fetch('/api/json-logs/search', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    log_file: file,
+                    location: location,
+                    from_time: fromTime,
+                    to_time: toTime
+                })
+            });
+            
+            const data = await res.json();
+            document.getElementById('jsonSearchLoading').style.display = 'none';
+            document.getElementById('jsonSearchResults').style.display = 'block';
+            
+            if (!data.success) {
+                document.getElementById('jsonResultCount').textContent = '';
+                document.getElementById('jsonResultsLog').innerHTML = `<span style="color: #ef4444">${escapeHtml(data.error)}</span>`;
+                return;
+            }
+            
+            jsonRawLines = data.lines || [];
+            document.getElementById('jsonResultCount').textContent = `(${jsonRawLines.length} records found)`;
+            renderJsonResults();
+        } catch (err) {
+            document.getElementById('jsonSearchLoading').style.display = 'none';
+            document.getElementById('jsonSearchResults').style.display = 'block';
+            document.getElementById('jsonResultsLog').innerHTML = `<span style="color: #ef4444">Error: ${escapeHtml(err.message)}</span>`;
+        }
+    }
+    
+    function renderJsonResults() {
+        const pretty = document.getElementById('prettyJsonFormat').checked;
+        const el = document.getElementById('jsonResultsLog');
+        
+        if (jsonRawLines.length === 0) {
+            el.innerHTML = '<span style="color: var(--color-text-muted);">No records found in this time range.</span>';
+            return;
+        }
+        
+        let html = '';
+        jsonRawLines.forEach((line, i) => {
+            if (!line.trim()) return;
+            if (pretty) {
+                try {
+                    const obj = JSON.parse(line);
+                    const ts1 = obj.timestamp1 || obj.timestamp;
+                    const tsDisplay = ts1 ? new Date(ts1 > 1e12 ? ts1 : ts1 * 1000).toLocaleString() : '';
+                    html += `<span style="color: #4b5563; font-size: 11px;">─── Record ${i+1}${tsDisplay ? ' · ' + tsDisplay : ''} ───</span>\\n`;
+                    html += escapeHtml(JSON.stringify(obj, null, 2)) + '\\n\\n';
+                } catch {
+                    html += escapeHtml(line) + '\\n';
+                }
+            } else {
+                html += escapeHtml(line) + '\\n';
+            }
+        });
+        
+        el.innerHTML = html;
+        el.scrollTop = 0;
     }
 </script>
 """)
@@ -1251,14 +1909,38 @@ def index():
 
 @app.route('/machines')
 def machines():
-    machines_list = get_tailscale_machines_api()
+    with cached_machines_lock:
+        machines_list = cached_machines if cached_machines else get_tailscale_machines_api()
+    
     return render_template_string(
         MACHINES_TEMPLATE,
         machines=machines_list,
         total=len(machines_list),
         online=sum(1 for m in machines_list if m['online']),
-        offline=sum(1 for m in machines_list if not m['online'])
+        offline=sum(1 for m in machines_list if not m['online']),
+        default_username=LINUX_USER_PASS
     )
+
+@app.route('/api/machines')
+def api_machines():
+    """API endpoint for getting current cached machine list (for auto-refresh)"""
+    with cached_machines_lock:
+        machines_list = cached_machines if cached_machines else get_tailscale_machines_api()
+        update_time = last_update_time
+    
+    total_machines = len(machines_list)
+    online_machines = sum(1 for m in machines_list if m['online'])
+    offline_machines = total_machines - online_machines
+    
+    return jsonify({
+        'success': True,
+        'machines': machines_list,
+        'total': total_machines,
+        'online': online_machines,
+        'offline': offline_machines,
+        'last_update': update_time,
+        'timestamp': time.time()
+    })
 
 @app.route('/login', methods=['POST'])
 def login():
@@ -1304,18 +1986,36 @@ def dashboard():
         return redirect(url_for('machines'))
 
     playbooks = get_playbooks()
-    
-    # Get standard .log files
-    out_base, err_base = execute_ssh(f"ls -1 {LOG_DIR}/*.log 2>/dev/null")
     target_logs = []
-    if out_base:
-        target_logs = [f.strip().split('/')[-1] for f in out_base.split('\n') if f.strip().endswith('.log')]
-
-    # Get json_logs files
-    out_json, err_json = execute_ssh(f"ls -1 {LOG_DIR}/json_logs/*.log 2>/dev/null || ls -1 {LOG_DIR}/json_logs/*.json 2>/dev/null")
     gateway_files = []
-    if out_json:
-        gateway_files = [f.strip().split('/')[-1] for f in out_json.split('\n') if f.strip()]
+    
+    # Look for standard .log files in both locations
+    # Location 1: /opt/go-ble-orchestrator/logs
+    out_base, err_base = execute_ssh(f"ls -1 {LOG_DIR}/*.log 2>/dev/null")
+    if out_base:
+        target_logs.extend([f.strip().split('/')[-1] for f in out_base.split('\n') if f.strip().endswith('.log')])
+    
+    # Location 2: /opt/go-ble-orchestrator/ (legacy)
+    out_legacy, err_legacy = execute_ssh("ls -1 /opt/go-ble-orchestrator/*.log 2>/dev/null")
+    if out_legacy:
+        target_logs.extend([f.strip().split('/')[-1] for f in out_legacy.split('\n') if f.strip().endswith('.log')])
+    
+    # Remove duplicates and sort
+    target_logs = sorted(list(set(target_logs)))
+    
+    # Look for json_logs in both locations
+    # Location 1: /opt/go-ble-orchestrator/logs/json_logs
+    out_json1, err_json1 = execute_ssh(f"ls -1 {LOG_DIR}/json_logs/*.log 2>/dev/null || ls -1 {LOG_DIR}/json_logs/*.json 2>/dev/null")
+    if out_json1:
+        gateway_files.extend([f.strip().split('/')[-1] for f in out_json1.split('\n') if f.strip()])
+    
+    # Location 2: /opt/go-ble-orchestrator/json_logs (legacy)
+    out_json2, err_json2 = execute_ssh("ls -1 /opt/go-ble-orchestrator/json_logs/*.log 2>/dev/null || ls -1 /opt/go-ble-orchestrator/json_logs/*.json 2>/dev/null")
+    if out_json2:
+        gateway_files.extend([f.strip().split('/')[-1] for f in out_json2.split('\n') if f.strip()])
+    
+    # Remove duplicates and sort
+    gateway_files = sorted(list(set(gateway_files)))
 
     return render_template_string(
         DASHBOARD_TEMPLATE,
@@ -1326,20 +2026,56 @@ def dashboard():
         log_dir=LOG_DIR
     )
 
+def find_log_file(filename):
+    """
+    Find a log file in either location:
+    1. /opt/go-ble-orchestrator/logs/
+    2. /opt/go-ble-orchestrator/
+    Returns (full_path, location_type) or (None, None) if not found
+    """
+    safe_name = filename.replace('..', '').lstrip('/')
+    
+    # Try logs directory first
+    path1 = f"{LOG_DIR}/{safe_name}"
+    # Try legacy root location
+    path2 = f"/opt/go-ble-orchestrator/{safe_name}"
+    
+    return path1, path2
+
+def find_json_log_file(filename):
+    """
+    Find a JSON log file in either location:
+    1. /opt/go-ble-orchestrator/logs/json_logs/
+    2. /opt/go-ble-orchestrator/json_logs/
+    Returns (full_path, location_type) or (None, None) if not found
+    """
+    safe_name = filename.replace('..', '').lstrip('/')
+    
+    # Try logs directory first
+    path1 = f"{LOG_DIR}/json_logs/{safe_name}"
+    # Try legacy root location
+    path2 = f"/opt/go-ble-orchestrator/json_logs/{safe_name}"
+    
+    return path1, path2
+
 @app.route('/view/<path:filename>')
 def view_file(filename):
     if 'ssh_id' not in session:
         return redirect(url_for('machines'))
     
-    # Sanitize filename to prevent path traversal
-    safe_filename = filename.replace('..', '').lstrip('/')
-    full_path = f"{LOG_DIR}/{safe_filename}"
+    path1, path2 = find_log_file(filename)
     
-    out, err = execute_ssh(f"tail -n 1000 {full_path} 2>&1")
+    # Try path1 first - reduced to 300 lines to avoid timeout on large files
+    out, err = execute_ssh(f"tail -n 300 {path1} 2>&1")
+    
+    # If file not found in path1 (error in output due to 2>&1), try path2
+    # Note: with 2>&1, error message is in 'out', not 'err'
+    if (not out or 'No such file' in out or 'cannot open' in out):
+        out, err = execute_ssh(f"tail -n 300 {path2} 2>&1")
     
     return render_template_string(
         VIEWER_TEMPLATE,
-        filename=safe_filename,
+        filename=filename,
         content=out or '',
         error=err if not out else None,
         log_dir=LOG_DIR
@@ -1366,41 +2102,47 @@ def search_gateway_json(filename):
     if from_epoch <= 0 or to_epoch <= 0 or from_epoch >= to_epoch:
         return jsonify({"error": "Invalid time range"}), 400
     
-    safe_filename = filename.replace('..', '').lstrip('/')
-    log_path = f"{LOG_DIR}/json_logs/{safe_filename}"
+    path1, path2 = find_json_log_file(filename)
     
-    # Python one-liner on the remote machine:
-    # Read each line, parse JSON, check if timestamp (ms) is in range, print matching lines.
-    # Handles both ms-epoch (>1e12) and s-epoch fields.
-    python_cmd = (
-        f"python3 -c \""
-        f"import sys, json; "
-        f"f=open('{log_path}'); "
-        f"[print(l.rstrip()) for l in f "
-        f"if (lambda t: t is not None and {from_epoch} <= (t if t > 1e12 else t*1000) <= {to_epoch})"
-        f"((lambda o: o.get('timestamp') or o.get('timestamp1'))"
-        f"(json.loads(l) if l.strip() else {{}}))"
-        f"] ; f.close()"
-        f"\" 2>&1 || echo 'ERROR: Could not read file'"
-    )
+    last_error = None
     
-    out, err = execute_ssh(python_cmd)
+    # Try both locations
+    for log_path in [path1, path2]:
+        # Python one-liner on the remote machine:
+        # Read each line, parse JSON, check if timestamp (ms) is in range, print matching lines.
+        # Handles both ms-epoch (>1e12) and s-epoch fields.
+        python_cmd = (
+            f"python3 -c \""
+            f"import sys, json; "
+            f"f=open('{log_path}'); "
+            f"[print(l.rstrip()) for l in f "
+            f"if (lambda t: t is not None and {from_epoch} <= (t if t > 1e12 else t*1000) <= {to_epoch})"
+            f"((lambda o: o.get('timestamp') or o.get('timestamp1'))"
+            f"(json.loads(l) if l.strip() else {{}}))"
+            f"] ; f.close()"
+            f"\" 2>&1"
+        )
+        
+        out, err = execute_ssh(python_cmd)
+        
+        # Check if we got a file not found error
+        if out and ('FileNotFoundError' in out or 'No such file' in out or 'cannot open' in out):
+            last_error = out
+            continue  # Try next path
+        
+        # If we got here and have output, return it (could be empty results or actual data)
+        if out is not None:
+            lines = [l for l in out.split('\n') if l.strip()]
+            return jsonify({
+                "lines": lines,
+                "count": len(lines),
+                "from_epoch": from_epoch,
+                "to_epoch": to_epoch
+            })
     
-    if err and not out:
-        return jsonify({"error": f"SSH error: {err}"}), 500
-    
-    lines = [l for l in (out or '').split('\n') if l.strip()]
-    
-    # Check for error output
-    if len(lines) == 1 and lines[0].startswith('ERROR:'):
-        return jsonify({"error": lines[0]}), 500
-    
-    return jsonify({
-        "lines": lines,
-        "count": len(lines),
-        "from_epoch": from_epoch,
-        "to_epoch": to_epoch
-    })
+    # If we get here, file not found in either location
+    error_msg = last_error if last_error else "File not found in either location"
+    return jsonify({"error": error_msg}), 404
 
 @app.route('/live_tail/<path:filename>')
 def live_tail(filename):
@@ -1415,18 +2157,18 @@ def stream_tail(filename):
     client = active_ssh_sessions.get(session_id)
     
     safe_filename = filename.replace('..', '').lstrip('/')
-    full_path = f"{LOG_DIR}/{safe_filename}"
+    path1 = f"{LOG_DIR}/{safe_filename}"
+    path2 = f"/opt/go-ble-orchestrator/{safe_filename}"
 
     def generate():
         if not client:
             yield "data: [ERROR] Session expired. Please reconnect.\n\n"
             return
         try:
-            # First send last 50 lines, then follow
-            stdin, stdout, stderr = client.exec_command(
-                f"tail -n 50 -f {full_path} 2>&1",
-                get_pty=True
-            )
+            # Use bash conditional to check path1 first, fallback to path2 if not found
+            # [ -f path1 ] && use path1 || use path2
+            cmd = f"[ -f '{path1}' ] && tail -n 50 -f '{path1}' 2>&1 || tail -n 50 -f '{path2}' 2>&1"
+            stdin, stdout, stderr = client.exec_command(cmd, get_pty=True)
             for line in iter(stdout.readline, ""):
                 if line:
                     yield f"data: {line.rstrip()}\n\n"
@@ -1590,6 +2332,162 @@ def ansible_setup():
     
     return Response(generate(), mimetype='text/plain')
 
+# ============================================================================
+# JSON LOG ENDPOINTS
+# ============================================================================
+
+@app.route('/api/json-logs/list', methods=['GET'])
+def list_json_logs_api():
+    """List available JSON log files from both directories"""
+    session_id = session.get('ssh_id')
+    if not session_id or session_id not in active_ssh_sessions:
+        return jsonify({'success': False, 'error': 'SSH session not found'})
+    
+    client = active_ssh_sessions.get(session_id)
+    logs = list_json_logs(client)
+    
+    return jsonify({
+        'success': True,
+        'logs': {
+            'logs_dir': logs.get('logs', []),  # From /opt/go-ble-orchestrator/logs/json_logs
+            'root_dir': logs.get('root', [])   # From /opt/go-ble-orchestrator/json_logs
+        }
+    })
+
+@app.route('/api/json-logs/search', methods=['POST'])
+def search_json_logs_api():
+    """Search JSON logs by timestamp range"""
+    session_id = session.get('ssh_id')
+    if not session_id or session_id not in active_ssh_sessions:
+        return jsonify({'success': False, 'error': 'SSH session not found'})
+    
+    data = request.get_json()
+    log_file = data.get('log_file', '')
+    log_location = data.get('location', 'logs')  # 'logs' or 'root'
+    from_time = data.get('from_time', '')
+    to_time = data.get('to_time', '')
+    
+    if not all([log_file, from_time, to_time]):
+        return jsonify({'success': False, 'error': 'Missing parameters: log_file, from_time, to_time'})
+    
+    # Determine log directory
+    if log_location == 'root':
+        log_dir = '/opt/go-ble-orchestrator/json_logs'
+    else:
+        log_dir = '/opt/go-ble-orchestrator/logs/json_logs'
+    
+    try:
+        start_epoch = parse_datetime_string(from_time)
+        end_epoch = parse_datetime_string(to_time)
+    except ValueError as e:
+        return jsonify({'success': False, 'error': str(e)})
+    
+    if start_epoch >= end_epoch:
+        return jsonify({'success': False, 'error': 'From time must be before To time'})
+    
+    client = active_ssh_sessions.get(session_id)
+    lines, error = search_json_logs_by_timestamp(client, log_dir, log_file, start_epoch, end_epoch)
+    
+    if error:
+        return jsonify({'success': False, 'error': error})
+    
+    return jsonify({
+        'success': True,
+        'count': len(lines),
+        'lines': lines,
+        'from_epoch': start_epoch,
+        'to_epoch': end_epoch
+    })
+
+@app.route('/api/json-logs/<location>/<filename>', methods=['GET'])
+def get_json_log_realtime(location, filename):
+    """Stream JSON log file in real-time"""
+    session_id = session.get('ssh_id')
+    if not session_id or session_id not in active_ssh_sessions:
+        return jsonify({'success': False, 'error': 'SSH session not found'}), 403
+    
+    # Determine log directory
+    if location == 'root':
+        log_dir = '/opt/go-ble-orchestrator/json_logs'
+    else:
+        log_dir = '/opt/go-ble-orchestrator/logs/json_logs'
+    
+    log_path = f"{log_dir}/{filename}"
+    client = active_ssh_sessions.get(session_id)
+    
+    try:
+        # Get last 100 lines
+        stdin, stdout, stderr = client.exec_command(f'tail -100 {log_path}')
+        exit_code = stdout.channel.recv_exit_status()
+        
+        if exit_code != 0:
+            error = stderr.read().decode('utf-8').strip()
+            return jsonify({'success': False, 'error': error})
+        
+        content = stdout.read().decode('utf-8').strip()
+        lines = [l for l in content.split('\n') if l.strip()]
+        
+        return jsonify({
+            'success': True,
+            'filename': filename,
+            'location': location,
+            'count': len(lines),
+            'lines': lines,
+            'timestamp': time.time()
+        })
+    
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/json-logs/<location>/<filename>/live-tail', methods=['GET'])
+def live_tail_buffered(location, filename):
+    """
+    Stream JSON log file with 3-second buffering
+    Prevents memory bloat by using background threads to pre-fetch chunks
+    Each chunk contains 100 lines, sent every 3 seconds
+    """
+    session_id = session.get('ssh_id')
+    if not session_id or session_id not in active_ssh_sessions:
+        return jsonify({'success': False, 'error': 'SSH session not found'}), 403
+    
+    # Determine log directory
+    if location == 'root':
+        log_dir = '/opt/go-ble-orchestrator/json_logs'
+    else:
+        log_dir = '/opt/go-ble-orchestrator/logs/json_logs'
+    
+    client = active_ssh_sessions.get(session_id)
+    
+    # Create unique streamer instance per request
+    streamer_id = f"{session_id}_{location}_{filename}"
+    
+    # Stop any existing streamer for this file
+    if streamer_id in active_streamers:
+        active_streamers[streamer_id].stop()
+    
+    # Create new buffered streamer (3-second chunks with background thread)
+    streamer = BufferedTailStreamer(client, log_dir, filename, chunk_size=3)
+    active_streamers[streamer_id] = streamer
+    
+    def cleanup():
+        """Clean up streamer when connection closes"""
+        if streamer_id in active_streamers:
+            active_streamers[streamer_id].stop()
+            del active_streamers[streamer_id]
+    
+    try:
+        # Return streaming response with chunks
+        response = Response(streamer.stream_chunks(timeout_seconds=3600), mimetype='application/x-ndjson')
+        response.call_on_close(cleanup)
+        return response
+    except Exception as e:
+        cleanup()
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+# ============================================================================
+# MAIN
+# ============================================================================
+
 if __name__ == '__main__':
     print("""
     ╔════════════════════════════════════════════════════╗
@@ -1598,13 +2496,12 @@ if __name__ == '__main__':
     
     🌐 http://localhost:5005
     
-    Features:
-    ✓ Tailscale machine discovery
-    ✓ SSH login (password or key)
-    ✓ Browse orchestrator logs (tail -n 1000)
-    ✓ Live tail with pretty-print & filter
-    ✓ JSON log search by epoch time range
-    ✓ Run Ansible playbooks with streaming output
-    """)
+    🔄 Background monitoring: ENABLED
+       - Auto-discovering new machines
+       - Polling interval: {} seconds
+    """.format(update_interval))
+    
+    # Start background monitoring thread
+    start_background_monitor()
     
     app.run(host='127.0.0.1', port=5005, debug=True, use_reloader=False)

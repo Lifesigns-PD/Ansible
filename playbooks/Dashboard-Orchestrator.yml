@@ -1,0 +1,284 @@
+---
+# Semaphore Master Playbook - Orchestrator Dashboard
+# Discovers and manages all Tailscale-connected machines
+# Semaphore Variables Required:
+#   - TAILSCALE_API_KEY
+#   - TAILSCALE_TENANT_NAME
+#   - LINUX_USER
+#   - LINUX_PASS
+
+- name: Orchestrator Machine Discovery & Dashboard
+  hosts: all
+  gather_facts: no
+  vars:
+    log_dir: "/opt/go-ble-orchestrator/logs"
+    json_log_dir: "/opt/go-ble-orchestrator/logs/json_logs"
+    
+  tasks:
+    
+    # ========================================================================
+    # SECTION 1: MACHINE DISCOVERY & STATUS
+    # ========================================================================
+    
+    - name: "DISCOVERY: Get local Tailscale status"
+      shell: tailscale status --json
+      register: tailscale_status_result
+      ignore_errors: yes
+      changed_when: no
+      
+    - name: "DISCOVERY: Parse Tailscale devices"
+      set_fact:
+        tailscale_status: "{{ tailscale_status_result.stdout | from_json | default({}) }}"
+      ignore_errors: yes
+      
+    - name: "DISCOVERY: Get device information"
+      shell: |
+        tailscale status --json | python3 -c "
+        import sys, json
+        data = json.load(sys.stdin)
+        peers = data.get('Peer', {})
+        for peer_id, peer in peers.items():
+            if peer.get('TailscaleIPs'):
+                print(f'{peer.get(\"HostName\", \"Unknown\")}:{peer[\"TailscaleIPs\"][0]}:{peer.get(\"Online\", False)}:{peer.get(\"OS\", \"Unknown\")}')
+        "
+      register: devices_output
+      ignore_errors: yes
+      changed_when: no
+      
+    - name: "DISCOVERY: Parse device list"
+      set_fact:
+        discovered_devices: "{{ devices_output.stdout_lines | default([]) }}"
+        
+    - name: "DEBUG: Display discovered devices"
+      debug:
+        msg: "Discovered {{ discovered_devices | length }} devices in tailnet"
+      
+    # ========================================================================
+    # SECTION 2: HEALTH CHECK & CONNECTIVITY
+    # ========================================================================
+    
+    - name: "HEALTH: Check remote system uptime"
+      shell: uptime
+      register: uptime_result
+      ignore_errors: yes
+      changed_when: no
+      
+    - name: "HEALTH: Check disk usage"
+      shell: df -h | head -n 2
+      register: disk_result
+      ignore_errors: yes
+      changed_when: no
+      
+    - name: "HEALTH: Check memory usage"
+      shell: free -h | head -n 2
+      register: memory_result
+      ignore_errors: yes
+      changed_when: no
+      
+    - name: "HEALTH: Get system information"
+      shell: "uname -a"
+      register: system_info
+      ignore_errors: yes
+      changed_when: no
+      
+    # ========================================================================
+    # SECTION 3: LOG DISCOVERY
+    # ========================================================================
+    
+    - name: "LOGS: Discover standard logs (current location)"
+      shell: "ls -1 {{ log_dir }}/*.log 2>/dev/null || echo 'NO_LOGS'"
+      register: standard_logs_current
+      ignore_errors: yes
+      changed_when: no
+      
+    - name: "LOGS: Discover standard logs (legacy location)"
+      shell: "ls -1 /opt/go-ble-orchestrator/*.log 2>/dev/null || echo 'NO_LOGS'"
+      register: standard_logs_legacy
+      ignore_errors: yes
+      changed_when: no
+      
+    - name: "LOGS: Discover JSON logs (current location)"
+      shell: "ls -1 {{ log_dir }}/json_logs/*.log 2>/dev/null | head -20 || echo 'NO_LOGS'"
+      register: json_logs_current
+      ignore_errors: yes
+      changed_when: no
+      
+    - name: "LOGS: Discover JSON logs (legacy location)"
+      shell: "ls -1 /opt/go-ble-orchestrator/json_logs/*.log 2>/dev/null | head -20 || echo 'NO_LOGS'"
+      register: json_logs_legacy
+      ignore_errors: yes
+      changed_when: no
+      
+    - name: "LOGS: Get recent standard logs"
+      shell: "[ -f {{ log_dir }}/app.log ] && tail -n 50 {{ log_dir }}/app.log || tail -n 50 /opt/go-ble-orchestrator/app.log 2>/dev/null || echo 'No app.log found'"
+      register: app_log_tail
+      ignore_errors: yes
+      changed_when: no
+      
+    - name: "LOGS: Count JSON log entries"
+      shell: "wc -l {{ log_dir }}/json_logs/*.log 2>/dev/null | tail -1 || wc -l /opt/go-ble-orchestrator/json_logs/*.log 2>/dev/null | tail -1 || echo '0 0'"
+      register: json_log_count
+      ignore_errors: yes
+      changed_when: no
+      
+    # ========================================================================
+    # SECTION 4: ORCHESTRATOR STATUS
+    # ========================================================================
+    
+    - name: "ORCHESTRATOR: Check if service is running"
+      shell: "systemctl is-active orchestrator || systemctl is-active go-ble-orchestrator || echo 'STOPPED'"
+      register: service_status
+      ignore_errors: yes
+      changed_when: no
+      
+    - name: "ORCHESTRATOR: Get service details"
+      shell: "systemctl status orchestrator 2>/dev/null || systemctl status go-ble-orchestrator 2>/dev/null || echo 'Service not found'"
+      register: service_details
+      ignore_errors: yes
+      changed_when: no
+      
+    - name: "ORCHESTRATOR: Check listening ports"
+      shell: "netstat -tuln 2>/dev/null | grep -E 'LISTEN|Proto' || ss -tuln 2>/dev/null | grep -E 'LISTEN|State'"
+      register: listening_ports
+      ignore_errors: yes
+      changed_when: no
+      
+    # ========================================================================
+    # SECTION 5: ANSIBLE INTEGRATION
+    # ========================================================================
+    
+    - name: "ANSIBLE: Check Ansible installation"
+      shell: "ansible-playbook --version || echo 'Not installed'"
+      register: ansible_version
+      ignore_errors: yes
+      changed_when: no
+      
+    - name: "ANSIBLE: List available playbooks"
+      shell: "ls -1 /tmp/ansible_deploy/*.yml 2>/dev/null | head -10 || echo 'No playbooks found'"
+      register: available_playbooks
+      ignore_errors: yes
+      changed_when: no
+      
+    # ========================================================================
+    # SECTION 6: EXPORT RESULTS FOR DASHBOARD
+    # ========================================================================
+    
+    - name: "EXPORT: Create dashboard report"
+      copy:
+        content: |
+          {
+            "timestamp": "{{ ansible_date_time.iso8601 }}",
+            "target": "{{ inventory_hostname }}",
+            "target_ip": "{{ ansible_host | default(inventory_hostname_short) }}",
+            
+            "discovery": {
+              "device_count": {{ discovered_devices | length }},
+              "devices": {{ discovered_devices | to_nice_json }}
+            },
+            
+            "health": {
+              "uptime": "{{ uptime_result.stdout | default('Unknown') }}",
+              "disk": "{{ disk_result.stdout_lines | to_nice_json }}",
+              "memory": "{{ memory_result.stdout_lines | to_nice_json }}",
+              "system": "{{ system_info.stdout | default('Unknown') }}"
+            },
+            
+            "logs": {
+              "standard_current": {{ standard_logs_current.stdout_lines | to_nice_json }},
+              "standard_legacy": {{ standard_logs_legacy.stdout_lines | to_nice_json }},
+              "json_current": {{ json_logs_current.stdout_lines | to_nice_json }},
+              "json_legacy": {{ json_logs_legacy.stdout_lines | to_nice_json }},
+              "app_log_sample": {{ app_log_tail.stdout_lines | to_nice_json }},
+              "json_count": "{{ json_log_count.stdout | default('0') }}"
+            },
+            
+            "orchestrator": {
+              "service_status": "{{ service_status.stdout | default('Unknown') }}",
+              "listening_ports": {{ listening_ports.stdout_lines | to_nice_json }}
+            },
+            
+            "ansible": {
+              "version": "{{ ansible_version.stdout | default('Not installed') }}",
+              "playbooks": {{ available_playbooks.stdout_lines | to_nice_json }}
+            }
+          }
+        dest: "/tmp/orchestrator_dashboard_{{ inventory_hostname }}.json"
+      delegate_to: localhost
+      become: no
+      
+    - name: "EXPORT: Display summary"
+      debug:
+        msg: |
+          ╔════════════════════════════════════════════════════════════════╗
+          ║         ORCHESTRATOR DASHBOARD SUMMARY                         ║
+          ╚════════════════════════════════════════════════════════════════╝
+          
+          🌐 TARGET: {{ inventory_hostname }} ({{ ansible_host | default(inventory_hostname_short) }})
+          📊 STATUS: {{ "✅ ONLINE" if service_status.stdout == "active" else "⚠️ OFFLINE" }}
+          🔧 UPTIME: {{ uptime_result.stdout_lines[0] | default('Unknown') }}
+          
+          📁 LOG FILES DISCOVERED:
+             • Standard (current): {{ standard_logs_current.stdout_lines | length }}
+             • Standard (legacy): {{ standard_logs_legacy.stdout_lines | length }}
+             • JSON (current): {{ json_logs_current.stdout_lines | length }}
+             • JSON (legacy): {{ json_logs_legacy.stdout_lines | length }}
+          
+          🎛️ SERVICE: {{ service_status.stdout | default('Unknown') }}
+          🔌 PORTS: {{ listening_ports.stdout_lines | length }} listening
+          
+          📋 REPORT SAVED: /tmp/orchestrator_dashboard_{{ inventory_hostname }}.json
+
+# ============================================================================
+# SUMMARY HANDLER - Aggregate all results for Semaphore Dashboard
+# ============================================================================
+
+- name: Aggregate Results for Semaphore Dashboard
+  hosts: localhost
+  gather_facts: yes
+  tasks:
+    - name: "Aggregate: Collect all dashboard reports"
+      shell: |
+        python3 << 'EOF'
+        import json
+        import glob
+        from datetime import datetime
+        
+        reports = {}
+        for report_file in glob.glob("/tmp/orchestrator_dashboard_*.json"):
+            try:
+                with open(report_file) as f:
+                    data = json.load(f)
+                    hostname = data.get('target', 'unknown')
+                    reports[hostname] = data
+            except:
+                pass
+        
+        dashboard = {
+            "generated_at": datetime.now().isoformat(),
+            "total_targets": len(reports),
+            "targets": reports,
+            "summary": {
+                "total_logs": sum(
+                    len(r.get('logs', {}).get('standard_current', [])) +
+                    len(r.get('logs', {}).get('standard_legacy', []))
+                    for r in reports.values()
+                ),
+                "total_json_logs": sum(
+                    len(r.get('logs', {}).get('json_current', [])) +
+                    len(r.get('logs', {}).get('json_legacy', []))
+                    for r in reports.values()
+                )
+            }
+        }
+        
+        with open("/tmp/orchestrator_dashboard_summary.json", "w") as f:
+            json.dump(dashboard, f, indent=2)
+        
+        print(json.dumps(dashboard, indent=2))
+        EOF
+      register: dashboard_summary
+      ignore_errors: yes
+      
+    - name: "Display: Final Dashboard Summary"
+      debug:
+        msg: "{{ dashboard_summary.stdout | from_json | to_nice_json }}"

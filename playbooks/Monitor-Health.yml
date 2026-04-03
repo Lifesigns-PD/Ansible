@@ -1,0 +1,324 @@
+---
+# Machine Health & Monitoring Playbook
+# Real-time system metrics collection and health check
+# Compatible with Semaphore UI
+
+- name: Monitor Machine Health & System Metrics
+  hosts: all
+  gather_facts: yes
+  tasks:
+    
+    # ========================================================================
+    # SECTION 1: SYSTEM INFORMATION
+    # ========================================================================
+    
+    - name: "SYSTEM: Collect basic facts"
+      setup:
+        filter: "ansible_*"
+      register: system_facts
+      
+    - name: "SYSTEM: Get OS information"
+      shell: "cat /etc/os-release | grep PRETTY_NAME | cut -d'=' -f2 | tr -d '\"'"
+      register: os_pretty_name
+      changed_when: no
+      
+    - name: "SYSTEM: Get kernel version"
+      shell: "uname -r"
+      register: kernel_version
+      changed_when: no
+      
+    - name: "SYSTEM: Get uptime"
+      shell: "uptime -p"
+      register: uptime_pretty
+      changed_when: no
+      
+    # ========================================================================
+    # SECTION 2: CPU METRICS
+    # ========================================================================
+    
+    - name: "CPU: Get CPU count"
+      shell: "nproc"
+      register: cpu_count
+      changed_when: no
+      
+    - name: "CPU: Get CPU model"
+      shell: "lscpu | grep 'Model name' | cut -d':' -f2 | xargs"
+      register: cpu_model
+      changed_when: no
+      
+    - name: "CPU: Get load average"
+      shell: "cat /proc/loadavg | awk '{print \"1min: \" $1 \" | 5min: \" $2 \" | 15min: \" $3}'"
+      register: load_average
+      changed_when: no
+      
+    - name: "CPU: Get CPU usage (top 5 processes)"
+      shell: "ps aux --sort=-%cpu | head -6 | tail -5 | awk '{print $1 \" - \" $2 \" - \" $(NF) \" (CPU: \" $3 \"%)\" }'"
+      register: top_cpu_processes
+      changed_when: no
+      
+    # ========================================================================
+    # SECTION 3: MEMORY METRICS
+    # ========================================================================
+    
+    - name: "MEMORY: Get memory info"
+      shell: |
+        free -b | awk 'NR==2 {
+          total=$2
+          used=$3
+          free=$4
+          pct=int((used/total)*100)
+          printf "Total: %.2f GB | Used: %.2f GB (%.0f%%) | Free: %.2f GB\n", 
+          total/1024/1024/1024, used/1024/1024/1024, pct, free/1024/1024/1024
+        }'
+      register: memory_info
+      changed_when: no
+      
+    - name: "MEMORY: Get memory by process (top 5)"
+      shell: "ps aux --sort=-%mem | head -6 | tail -5 | awk '{print $1 \" - \" $2 \" - \" $(NF) \" (MEM: \" $4 \"%)\" }'"
+      register: top_mem_processes
+      changed_when: no
+      
+    - name: "MEMORY: Get swap info"
+      shell: "free -h | grep Swap | awk '{print \"Total: \" $2 \" | Used: \" $3 \" | Free: \" $4}'"
+      register: swap_info
+      changed_when: no
+      
+    # ========================================================================
+    # SECTION 4: DISK METRICS
+    # ========================================================================
+    
+    - name: "DISK: Get disk usage"
+      shell: |
+        df -h | awk 'NR>1 {
+          printf "%s: %s / %s (%s%%)\n", $6, $3, $2, $5
+        }' | head -5
+      register: disk_usage
+      changed_when: no
+      
+    - name: "DISK: Get disk I/O statistics"
+      shell: "iostat -x 1 2 2>/dev/null | tail -n 20 || echo 'iostat not available'"
+      register: disk_io
+      changed_when: no
+      
+    - name: "DISK: Check for large files"
+      shell: "find /opt/go-ble-orchestrator -type f -size +100M 2>/dev/null | head -5 || echo 'None found'"
+      register: large_files
+      changed_when: no
+      
+    # ========================================================================
+    # SECTION 5: NETWORK METRICS
+    # ========================================================================
+    
+    - name: "NETWORK: Get network interfaces"
+      shell: "ip -s link show | grep -E '^[0-9]:|RX bytes|TX bytes' | head -20"
+      register: network_interfaces
+      changed_when: no
+      
+    - name: "NETWORK: Get tailscale status"
+      shell: "tailscale status 2>/dev/null | grep -E '^[a-zA-Z0-9]' | head -5 || echo 'Tailscale not running'"
+      register: tailscale_peers
+      changed_when: no
+      
+    - name: "NETWORK: Check connectivity"
+      shell: "ping -c 1 -W 1 8.8.8.8 2>&1 | grep -E 'time|Unreachable' || echo 'No internet'"
+      register: internet_check
+      changed_when: no
+      
+    # ========================================================================
+    # SECTION 6: PORT & SERVICE MONITORING
+    # ========================================================================
+    
+    - name: "SERVICES: Check listening ports"
+      shell: "netstat -tuln 2>/dev/null | grep LISTEN | head -10 || ss -tuln 2>/dev/null | grep LISTEN | head -10"
+      register: listening_ports
+      changed_when: no
+      
+    - name: "SERVICES: Check Orchestrator service"
+      shell: |
+        if systemctl is-active --quiet orchestrator; then
+          echo "✅ Orchestrator: RUNNING"
+          systemctl show orchestrator -p ExecMainStartTimestamp --value
+        elif systemctl is-active --quiet go-ble-orchestrator; then
+          echo "✅ Go-Ble-Orchestrator: RUNNING"
+          systemctl show go-ble-orchestrator -p ExecMainStartTimestamp --value
+        else
+          echo "⚠️ No Orchestrator service found"
+        fi
+      register: orchestrator_service
+      changed_when: no
+      
+    - name: "SERVICES: Check SSH status"
+      shell: "systemctl is-active ssh || systemctl is-active sshd || echo 'SSH not running'"
+      register: ssh_status
+      changed_when: no
+      
+    - name: "SERVICES: Check Tailscale status"
+      shell: |
+        tailscale status --self 2>/dev/null | head -1 || echo "Tailscale not running"
+      register: tailscale_status
+      changed_when: no
+      
+    # ========================================================================
+    # SECTION 7: SECURITY & HEALTH CHECKS
+    # ========================================================================
+    
+    - name: "HEALTH: Check for failed SSH attempts (last hour)"
+      shell: "grep 'Failed password\\|Invalid user' /var/log/auth.log 2>/dev/null | tail -20 | wc -l || echo '0'"
+      register: failed_ssh_attempts
+      changed_when: no
+      ignore_errors: yes
+      
+    - name: "HEALTH: Check system logs for errors (last hour)"
+      shell: "journalctl --since '1 hour ago' -p err -q | wc -l || echo '0'"
+      register: system_errors
+      changed_when: no
+      ignore_errors: yes
+      
+    - name: "HEALTH: Check disk space warnings"
+      shell: |
+        df -h | awk '$5 > 80 { print $6 " is " $5 " full - WARNING" }'
+      register: disk_warnings
+      changed_when: no
+      
+    - name: "HEALTH: Check memory usage warning"
+      shell: |
+        free | awk 'NR==2 { if ($3/$2 > 0.8) print "MEMORY USAGE HIGH: " int(($3/$2)*100) "%" }' || echo "OK"
+      register: memory_warning
+      changed_when: no
+      
+    # ========================================================================
+    # SECTION 8: SYSTEM INTEGRITY
+    # ========================================================================
+    
+    - name: "INTEGRITY: List all running services"
+      shell: "systemctl list-units --type=service --state=running --no-pager | tail -20"
+      register: running_services
+      changed_when: no
+      
+    - name: "INTEGRITY: Check for zombie processes"
+      shell: "ps aux | grep -c 'defunct\\|<defunct>' || echo '0'"
+      register: zombie_processes
+      changed_when: no
+      
+    # ========================================================================
+    # SECTION 9: GENERATE COMPREHENSIVE REPORT
+    # ========================================================================
+    
+    - name: "REPORT: Create health report JSON"
+      copy:
+        content: |
+          {
+            "timestamp": "{{ ansible_date_time.iso8601 }}",
+            "target": "{{ inventory_hostname }}",
+            "target_ip": "{{ ansible_host | default('unknown') }}",
+            
+            "system": {
+              "hostname": "{{ ansible_hostname }}",
+              "os": "{{ os_pretty_name.stdout }}",
+              "kernel": "{{ kernel_version.stdout }}",
+              "uptime": "{{ uptime_pretty.stdout }}",
+              "timezone": "{{ ansible_date_time.tz }}"
+            },
+            
+            "cpu": {
+              "cores": "{{ cpu_count.stdout }}",
+              "model": "{{ cpu_model.stdout }}",
+              "load_average": "{{ load_average.stdout }}",
+              "top_processes": {{ top_cpu_processes.stdout_lines | to_nice_json }}
+            },
+            
+            "memory": {
+              "info": "{{ memory_info.stdout }}",
+              "swap": "{{ swap_info.stdout }}",
+              "top_processes": {{ top_mem_processes.stdout_lines | to_nice_json }}
+            },
+            
+            "disk": {
+              "usage": {{ disk_usage.stdout_lines | to_nice_json }},
+              "warnings": {{ disk_warnings.stdout_lines | to_nice_json }},
+              "large_files": {{ large_files.stdout_lines | to_nice_json }}
+            },
+            
+            "network": {
+              "interfaces": {{ network_interfaces.stdout_lines | to_nice_json }},
+              "tailscale": "{{ tailscale_peers.stdout_lines[0] | default('Not connected') }}",
+              "internet": "{{ internet_check.stdout_lines[0] | default('No connection') }}"
+            },
+            
+            "services": {
+              "listening_ports": {{ listening_ports.stdout_lines | to_nice_json }},
+              "orchestrator": "{{ orchestrator_service.stdout_lines[0] | default('Not found') }}",
+              "ssh": "{{ ssh_status.stdout }}",
+              "tailscale": "{{ tailscale_status.stdout }}"
+            },
+            
+            "health": {
+              "failed_ssh_attempts_1h": "{{ failed_ssh_attempts.stdout }}",
+              "system_errors_1h": "{{ system_errors.stdout }}",
+              "memory_warning": "{{ memory_warning.stdout | default('OK') }}",
+              "zombie_processes": "{{ zombie_processes.stdout }}"
+            },
+            
+            "running_services": {{ running_services.stdout_lines | to_nice_json }}
+          }
+        dest: "/tmp/health_report_{{ inventory_hostname }}.json"
+      delegate_to: localhost
+      become: no
+      
+    # ========================================================================
+    # SECTION 10: DISPLAY SUMMARY
+    # ========================================================================
+    
+    - name: "DISPLAY: Show health summary"
+      debug:
+        msg: |
+          ╔══════════════════════════════════════════════════════════════╗
+          ║           MACHINE HEALTH & MONITORING REPORT                 ║
+          ╚══════════════════════════════════════════════════════════════╝
+          
+          🖥️  SYSTEM INFORMATION
+          ────────────────────────────────────────────────────────────────
+          Hostname:    {{ inventory_hostname }}
+          OS:          {{ os_pretty_name.stdout }}
+          Kernel:      {{ kernel_version.stdout }}
+          Uptime:      {{ uptime_pretty.stdout }}
+          
+          ⚙️  CPU METRICS
+          ────────────────────────────────────────────────────────────────
+          Cores:       {{ cpu_count.stdout }}
+          Model:       {{ cpu_model.stdout }}
+          Load Avg:    {{ load_average.stdout }}
+          Top Processes:
+          {{ top_cpu_processes.stdout_lines | join('\n') }}
+          
+          💾 MEMORY METRICS
+          ────────────────────────────────────────────────────────────────
+          {{ memory_info.stdout }}
+          Swap:        {{ swap_info.stdout }}
+          Top Processes:
+          {{ top_mem_processes.stdout_lines | join('\n') }}
+          
+          💿 DISK METRICS
+          ────────────────────────────────────────────────────────────────
+          {{ disk_usage.stdout_lines | join('\n') }}
+          {% if disk_warnings.stdout_lines %}
+          ⚠️  WARNINGS: {{ disk_warnings.stdout_lines | join(' | ') }}
+          {% endif %}
+          
+          🌐 NETWORK & SERVICES
+          ────────────────────────────────────────────────────────────────
+          Orchestrator:  {{ orchestrator_service.stdout_lines[0] }}
+          SSH:           {{ ssh_status.stdout }}
+          Tailscale:     {{ tailscale_status.stdout }}
+          Listening:     {{ listening_ports.stdout_lines | length }} ports
+          
+          ✅ HEALTH STATUS
+          ────────────────────────────────────────────────────────────────
+          Failed SSH (1h):  {{ failed_ssh_attempts.stdout }}
+          System Errors:    {{ system_errors.stdout }}
+          Zombies:          {{ zombie_processes.stdout }}
+          {% if memory_warning.stdout != "OK" %}
+          ⚠️  {{ memory_warning.stdout }}
+          {% endif %}
+          
+          📊 Report saved to: /tmp/health_report_{{ inventory_hostname }}.json

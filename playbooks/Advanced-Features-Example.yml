@@ -1,0 +1,168 @@
+---
+# Example Playbook: Leverage New Tailscale API Features
+# Demonstrates tag-based selection, authorization checks, and role detection
+# Uses new hostvars from enhanced inventory script
+
+- name: Advanced Infrastructure Management
+  hosts: localhost
+  gather_facts: no
+  
+  tasks:
+    - name: "REPORT: Discover all machines"
+      debug:
+        msg: |
+          Total Machines: {{ groups['all'] | length }}
+          Online: {{ groups['online'] | length }}
+          Offline: {{ groups['offline'] | length }}
+          Authorized: {{ groups.get('authorized', []) | length }}
+          Unauthorized: {{ groups.get('unauthorized', []) | length }}
+          Exit Nodes: {{ groups.get('exit_nodes', []) | length }}
+          Subnet Routers: {{ groups.get('subnet_routers', []) | length }}
+
+    - name: "REPORT: List all tagged groups"
+      debug:
+        msg: "{{ item }}: {{ groups.get(item, []) | length }} devices"
+      loop: "{{ groups.keys() | select('match', '^tag_') | list }}"
+
+    - name: "REPORT: Device details"
+      debug:
+        msg: |
+          {% for host in groups['all'] %}
+          {{ hostvars[host].tailscale_ip }} : {{ host }}
+            - OS: {{ hostvars[host].os }}
+            - Status: {{ hostvars[host].status }}
+            - Authorized: {{ hostvars[host].authorized }}
+            - Tags: {{ hostvars[host].tags | join(', ') }}
+            - Key expires: {{ hostvars[host].key_expires | default('Never') }}
+          {% endfor %}
+
+---
+- name: Infrastructure-Only Tasks
+  hosts: tag_infrastructure
+  gather_facts: no
+  
+  tasks:
+    - name: "Verify infrastructure machines are authorized"
+      assert:
+        that:
+          - hostvars[inventory_hostname].authorized | bool
+        fail_msg: "Infrastructure device {{ inventory_hostname }} is NOT authorized!"
+
+    - name: "Check infrastructure machine status"
+      debug:
+        msg: |
+          Device: {{ inventory_hostname }}
+          IP: {{ hostvars[inventory_hostname].tailscale_ip }}
+          Status: {{ hostvars[inventory_hostname].status }}
+          OS: {{ hostvars[inventory_hostname].os }}
+
+---
+- name: Exit Node Monitoring
+  hosts: exit_nodes
+  gather_facts: no
+  
+  tasks:
+    - name: "ALERT: Exit node detected"
+      debug:
+        msg: |
+          ⚠️  EXIT NODE: {{ inventory_hostname }}
+          IP: {{ hostvars[inventory_hostname].tailscale_ip }}
+          Status: {{ hostvars[inventory_hostname].status }}
+
+---
+- name: Key Expiry Management
+  hosts: all
+  gather_facts: no
+  
+  tasks:
+    - name: "Check key expiry status"
+      block:
+        - name: Get key expiry date
+          set_fact:
+            key_expires: "{{ hostvars[inventory_hostname].key_expires }}"
+            key_disabled: "{{ hostvars[inventory_hostname].key_expiry_disabled }}"
+        
+        - name: "Alert if key expiry disabled"
+          debug:
+            msg: "⚠️  {{ inventory_hostname }}: Key expiry is DISABLED"
+          when: key_disabled | bool
+        
+        - name: "Show key expiry for machines with expiry enabled"
+          debug:
+            msg: "🕐 {{ inventory_hostname }}: Key expires at {{ key_expires }}"
+          when: 
+            - not (key_disabled | bool)
+            - key_expires != ''
+
+---
+- name: Unauthorized Device Alerts
+  hosts: unauthorized
+  gather_facts: no
+  
+  tasks:
+    - name: "ALERT: Unauthorized device found"
+      debug:
+        msg: |
+          ❌ UNAUTHORIZED: {{ inventory_hostname }}
+          IP: {{ hostvars[inventory_hostname].tailscale_ip }}
+          OS: {{ hostvars[inventory_hostname].os }}
+          STATUS: {{ hostvars[inventory_hostname].status }}
+          
+          ACTION REQUIRED: Approve device in Tailscale admin console
+
+---
+- name: Subnet Router Inventory Export
+  hosts: subnet_routers
+  gather_facts: no
+  
+  tasks:
+    - name: "Collect subnet router information"
+      set_fact:
+        router_info: |
+          Device: {{ inventory_hostname }}
+          Tailscale IP: {{ hostvars[inventory_hostname].tailscale_ip }}
+          OS: {{ hostvars[inventory_hostname].os }}
+          Status: {{ hostvars[inventory_hostname].status }}
+          Authorized: {{ hostvars[inventory_hostname].authorized }}
+          Tags: {{ hostvars[inventory_hostname].tags | join(', ') }}
+    
+    - name: "Export router configuration"
+      copy:
+        content: "{{ router_info }}"
+        dest: "/tmp/{{ inventory_hostname }}_subnet_router.txt"
+      delegate_to: localhost
+
+---
+- name: Production Environment Management
+  hosts: tag_production
+  gather_facts: no
+  
+  tasks:
+    - name: "Verify production device compliance"
+      assert:
+        that:
+          - hostvars[inventory_hostname].authorized | bool
+          - not hostvars[inventory_hostname].is_ephemeral | bool
+        fail_msg: "Production device {{ inventory_hostname }} failed compliance check"
+    
+    - name: "Show production device"
+      debug:
+        msg: |
+          PROD: {{ inventory_hostname }}
+          IP: {{ hostvars[inventory_hostname].tailscale_ip }}
+          Created: {{ hostvars[inventory_hostname].created }}
+          Client: {{ hostvars[inventory_hostname].client_version }}
+
+---
+- name: Offline Device Report
+  hosts: offline
+  gather_facts: no
+  
+  tasks:
+    - name: "Report offline machines"
+      debug:
+        msg: |
+          📴 OFFLINE: {{ inventory_hostname }}
+          IP: {{ hostvars[inventory_hostname].tailscale_ip }}
+          Last Seen: {{ hostvars[inventory_hostname].last_seen }}
+          Status: {{ hostvars[inventory_hostname].status }}
