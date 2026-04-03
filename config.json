@@ -1,0 +1,10 @@
+{
+ 	"sqlite": {
+ 		"host": "/mnt/c/Users/LifesignsPD/Documents/Orchestrator/CassiaConnectionTest/Ansible/ansible"
+ 	},
+ 	"dialect": "sqlite",
+ 	"tmp_path": "/mnt/c/Users/LifesignsPD/Documents/Orchestrator/CassiaConnectionTest/Ansible/ansible/playbooks",
+ 	"cookie_hash": "cil4f8fVTRt2i+RsZYlAYqR8PdEzwpACmPVzY53RUaw=",
+ 	"cookie_encryption": "/j189412MB0gjtUZsgWdbSLPd4dGYqHt62sf3VP9nGs=",
+ 	"access_key_encryption": "ZZuGwSi0LC428jSWHSchik/YtG8SIpQUKi9r41BJTwM="
+ }
