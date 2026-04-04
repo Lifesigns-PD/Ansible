@@ -363,3 +363,34 @@ time="2026-04-04T10:31:52+05:30" level=warning msg="Failed to run task" context=
 time="2026-04-04T10:31:52+05:30" level=info msg="Task status updated" context=task_logger status=error task_id=11
 time="2026-04-04T10:31:52+05:30" level=info msg="Stopped running task deploy" task_id=11
 time="2026-04-04T10:31:52+05:30" level=warning msg="invalid ansible result host: Failed to run task: exit status 2" content=ansible_result_parser task_id=11
+time="2026-04-04T11:49:22+05:30" level=info msg="Task added to queue" task_id=12 task_name=deploy
+time="2026-04-04T11:49:22+05:30" level=info msg="Set resource locker" context=task_pool task_id=12 task_name=deploy
+time="2026-04-04T11:49:22+05:30" level=info msg="Task started" context=task_pool task_id=12 task_name=deploy
+time="2026-04-04T11:49:23+05:30" level=info msg="Task status updated" context=task_logger status=starting task_id=12
+time="2026-04-04T11:49:23+05:30" level=info msg="Task status updated" context=task_logger status=running task_id=12
+time="2026-04-04T11:49:37+05:30" level=warning msg="Failed to run task" context=task_runner error="exit status 2" task_id=12 task_status=running
+time="2026-04-04T11:49:37+05:30" level=info msg="Task status updated" context=task_logger status=error task_id=12
+time="2026-04-04T11:49:37+05:30" level=info msg="Stopped running task deploy" task_id=12
+time="2026-04-04T11:49:37+05:30" level=warning msg="invalid ansible result host: Failed to run task: exit status 2" content=ansible_result_parser task_id=12
+time="2026-04-04T11:53:10+05:30" level=info msg="Task added to queue" task_id=13 task_name=deploy
+time="2026-04-04T11:53:10+05:30" level=info msg="Set resource locker" context=task_pool task_id=13 task_name=deploy
+time="2026-04-04T11:53:10+05:30" level=info msg="Task started" context=task_pool task_id=13 task_name=deploy
+time="2026-04-04T11:53:12+05:30" level=info msg="Task status updated" context=task_logger status=starting task_id=13
+time="2026-04-04T11:53:12+05:30" level=info msg="Task status updated" context=task_logger status=running task_id=13
+time="2026-04-04T11:53:21+05:30" level=warning msg="Failed to run task" context=task_runner error="exit status 2" task_id=13 task_status=running
+time="2026-04-04T11:53:21+05:30" level=info msg="Task status updated" context=task_logger status=error task_id=13
+time="2026-04-04T11:53:21+05:30" level=info msg="Stopped running task deploy" task_id=13
+time="2026-04-04T11:53:21+05:30" level=warning msg="invalid ansible result host: Failed to run task: exit status 2" content=ansible_result_parser task_id=13
+time="2026-04-04T11:55:16+05:30" level=info msg="Task added to queue" task_id=14 task_name=deploy
+time="2026-04-04T11:55:16+05:30" level=info msg="Set resource locker" context=task_pool task_id=14 task_name=deploy
+time="2026-04-04T11:55:16+05:30" level=info msg="Task started" context=task_pool task_id=14 task_name=deploy
+time="2026-04-04T11:55:17+05:30" level=info msg="Task status updated" context=task_logger status=starting task_id=14
+time="2026-04-04T11:55:17+05:30" level=info msg="Task status updated" context=task_logger status=running task_id=14
+time="2026-04-04T11:59:36+05:30" level=info msg="Task status updated" context=task_logger status=stopping task_id=14
+time="2026-04-04T11:59:36+05:30" level=info msg="Task status updated" context=task_logger status=stopped task_id=14
+time="2026-04-04T11:59:36+05:30" level=info msg="Stopped running task deploy" task_id=14
+time="2026-04-04T11:59:41+05:30" level=info msg="Task added to queue" task_id=15 task_name=deploy
+time="2026-04-04T11:59:41+05:30" level=info msg="Set resource locker" context=task_pool task_id=15 task_name=deploy
+time="2026-04-04T11:59:41+05:30" level=info msg="Task started" context=task_pool task_id=15 task_name=deploy
+time="2026-04-04T11:59:42+05:30" level=info msg="Task status updated" context=task_logger status=starting task_id=15
+time="2026-04-04T11:59:42+05:30" level=info msg="Task status updated" context=task_logger status=running task_id=15

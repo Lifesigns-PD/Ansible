@@ -13,6 +13,8 @@
         url: "https://github.com/Lifesigns-PD/orchestrator-releases/releases/download/setup/setup.sh"
         dest: "/tmp/setup.sh"
         mode: '0755'
+      # Force download even in dry run
+      check_mode: no
 
     - name: Patch setup.sh (Hotfix Regex, Pipefail, and Interactive Prompts)
       # This fixes the regex, safety rules, and automatically answers the prompts 
@@ -29,12 +31,14 @@
         sed -i 's/read -r -p "Additionally you need to update the gateway-dashboard version. Type yes to continue: " update_gateway_dashboard/update_gateway_dashboard="yes"/g' /tmp/setup.sh
         # Auto-decline the nano config editor
         sed -i 's/read -r -p "Do you want to edit gateway-dashboard config.json now? Type yes to open sudo nano: " edit_gateway_config/edit_gateway_config="no"/g' /tmp/setup.sh
+      # FORCE this task to run to prevent the script from keeping interactive prompts
+      check_mode: no
 
     - name: Execute setup.sh in Debug Mode
-      # Using bash -x prints every command executed to the log for easy debugging
-      shell: bash -x /tmp/setup.sh
+      # Using bash -x prints every command executed to the log for easy debugging.
+      # We also pipe the answers as a secondary failsafe just in case.
+      shell: printf "yes\nyes\nno\n" | bash -x /tmp/setup.sh
       register: bash_output
-      # This forces the script to run even if Semaphore is accidentally in Dry Run mode
       check_mode: no
 
     - name: Show setup.sh output
