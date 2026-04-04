@@ -145,7 +145,7 @@
 
     - name: Extract orchestrator zip URL
       shell: |
-        printf '%s\n' '{{ release_json.stdout }}' | grep -oE '"browser_download_url":[[:space:]]*"[^"]+Installationsmain[^"]*\.zip"' | head -n 1 | cut -d '"' -f 4
+        echo '{{ release_json.stdout }}' | grep -oP 'https://[^"]*Installationsmain[^"]*\.zip' | head -n 1
       register: zip_url_result
 
     - name: Extract orchestrator tag name
