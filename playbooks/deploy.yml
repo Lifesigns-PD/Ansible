@@ -5,8 +5,8 @@
 
 - name: Deploy BLE Orchestrator + Gateway Dashboard
   hosts: all
-  become: no
-  gather_facts: no
+  become: yes
+  gather_facts: yes
 
   vars:
     service_name: "go-ble-orchestrator"
@@ -145,7 +145,7 @@
 
     - name: Extract orchestrator zip URL
       shell: |
-        printf '%s\n' '{{ release_json.stdout }}' | grep -oE '"browser_download_url":[[:space:]]*"[^"]+Installationsmain-[^"]+\.zip"' | head -n 1 | cut -d '"' -f 4
+        printf '%s\n' '{{ release_json.stdout }}' | grep -oE '"browser_download_url":[[:space:]]*"[^"]+Installationsmain[^"]*\.zip"' | head -n 1 | cut -d '"' -f 4
       register: zip_url_result
 
     - name: Extract orchestrator tag name
@@ -183,7 +183,7 @@
     - name: Run DeviceManager_Install.sh
       shell: |
         cd "{{ work_dir }}/Installationsmain"
-        sudo ./DeviceManager_Install.sh
+        yes | sudo ./DeviceManager_Install.sh
       register: installer_output
 
     - name: Show installer output

@@ -300,3 +300,39 @@ time="2026-04-04T09:42:22+05:30" level=info msg="Task status updated" context=ta
 time="2026-04-04T09:42:22+05:30" level=info msg="Task status updated" context=task_logger status=running task_id=4
 time="2026-04-04T09:42:30+05:30" level=info msg="Task status updated" context=task_logger status=success task_id=4
 time="2026-04-04T09:42:30+05:30" level=info msg="Stopped running task deploy" task_id=4
+time="2026-04-04T09:47:23+05:30" level=info msg="Task added to queue" task_id=5 task_name=deploy
+time="2026-04-04T09:47:23+05:30" level=info msg="Set resource locker" context=task_pool task_id=5 task_name=deploy
+time="2026-04-04T09:47:23+05:30" level=info msg="Task started" context=task_pool task_id=5 task_name=deploy
+time="2026-04-04T09:47:24+05:30" level=info msg="Task status updated" context=task_logger status=starting task_id=5
+time="2026-04-04T09:47:24+05:30" level=info msg="Task status updated" context=task_logger status=running task_id=5
+time="2026-04-04T09:48:07+05:30" level=warning msg="Failed to run task" context=task_runner error="exit status 4" task_id=5 task_status=running
+time="2026-04-04T09:48:07+05:30" level=info msg="Task status updated" context=task_logger status=error task_id=5
+time="2026-04-04T09:48:07+05:30" level=info msg="Stopped running task deploy" task_id=5
+time="2026-04-04T09:48:07+05:30" level=warning msg="invalid ansible result host: Failed to run task: exit status 4" content=ansible_result_parser task_id=5
+time="2026-04-04T09:50:25+05:30" level=info msg="Task added to queue" task_id=6 task_name=deploy
+time="2026-04-04T09:50:25+05:30" level=info msg="Set resource locker" context=task_pool task_id=6 task_name=deploy
+time="2026-04-04T09:50:25+05:30" level=info msg="Task started" context=task_pool task_id=6 task_name=deploy
+time="2026-04-04T09:50:26+05:30" level=info msg="Task status updated" context=task_logger status=starting task_id=6
+time="2026-04-04T09:50:26+05:30" level=info msg="Task status updated" context=task_logger status=running task_id=6
+time="2026-04-04T09:51:01+05:30" level=warning msg="Failed to run task" context=task_runner error="exit status 4" task_id=6 task_status=running
+time="2026-04-04T09:51:01+05:30" level=info msg="Task status updated" context=task_logger status=error task_id=6
+time="2026-04-04T09:51:01+05:30" level=info msg="Stopped running task deploy" task_id=6
+time="2026-04-04T09:51:01+05:30" level=warning msg="invalid ansible result host: Failed to run task: exit status 4" content=ansible_result_parser task_id=6
+time="2026-04-04T09:51:44+05:30" level=info msg="Task added to queue" task_id=7 task_name=deploy
+time="2026-04-04T09:51:44+05:30" level=info msg="Set resource locker" context=task_pool task_id=7 task_name=deploy
+time="2026-04-04T09:51:44+05:30" level=info msg="Task started" context=task_pool task_id=7 task_name=deploy
+time="2026-04-04T09:51:45+05:30" level=info msg="Task status updated" context=task_logger status=starting task_id=7
+time="2026-04-04T09:51:45+05:30" level=info msg="Task status updated" context=task_logger status=running task_id=7
+time="2026-04-04T09:51:57+05:30" level=warning msg="Failed to run task" context=task_runner error="exit status 2" task_id=7 task_status=running
+time="2026-04-04T09:51:57+05:30" level=info msg="Task status updated" context=task_logger status=error task_id=7
+time="2026-04-04T09:51:57+05:30" level=info msg="Stopped running task deploy" task_id=7
+time="2026-04-04T09:51:57+05:30" level=warning msg="invalid ansible result host: Failed to run task: exit status 2" content=ansible_result_parser task_id=7
+time="2026-04-04T09:59:03+05:30" level=info msg="Task added to queue" task_id=8 task_name=deploy
+time="2026-04-04T09:59:03+05:30" level=info msg="Set resource locker" context=task_pool task_id=8 task_name=deploy
+time="2026-04-04T09:59:03+05:30" level=info msg="Task started" context=task_pool task_id=8 task_name=deploy
+time="2026-04-04T09:59:04+05:30" level=info msg="Task status updated" context=task_logger status=starting task_id=8
+time="2026-04-04T09:59:04+05:30" level=info msg="Task status updated" context=task_logger status=running task_id=8
+time="2026-04-04T09:59:16+05:30" level=warning msg="Failed to run task" context=task_runner error="exit status 2" task_id=8 task_status=running
+time="2026-04-04T09:59:16+05:30" level=info msg="Task status updated" context=task_logger status=error task_id=8
+time="2026-04-04T09:59:16+05:30" level=info msg="Stopped running task deploy" task_id=8
+time="2026-04-04T09:59:17+05:30" level=warning msg="invalid ansible result host: Failed to run task: exit status 2" content=ansible_result_parser task_id=8

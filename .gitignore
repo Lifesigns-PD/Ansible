@@ -38,3 +38,6 @@ venv/
 env/
 .env
 .env.local
+
+semaphore.log
+nohup.out
