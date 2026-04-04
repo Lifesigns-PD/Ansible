@@ -1,10 +1,8 @@
 ---
 # rollback.yml
-# Restores go-ble-orchestrator and gateway-dashboard from the most recent backup.
-# Compatible with Semaphore UI — uses become: yes for sudo.
-#
-# Backups are created automatically by deploy.yml in /opt/backups/
-# This playbook finds the latest backup and restores it.
+# Restores go-ble-orchestrator from the most recent backup in /opt/backups/
+# Backups are created automatically by deploy.yml.
+# Gateway-dashboard is re-downloaded from GitHub latest if no backup exists.
 
 - name: Rollback BLE Orchestrator + Gateway Dashboard
   hosts: all
@@ -18,50 +16,36 @@
     gateway_service_name: "gateway-dashboard"
     gateway_install_dir: "/opt/gateway-dashboard"
     gateway_service_file: "/etc/systemd/system/gateway-dashboard.service"
-    orchestrator_service_file: "/etc/systemd/system/go-ble-orchestrator.service"
     backup_dir: "/opt/backups"
 
   tasks:
 
     # ─────────────────────────────────────────────
-    # FIND BACKUPS
+    # FIND BACKUP
     # ─────────────────────────────────────────────
 
     - name: Find latest orchestrator backup
-      shell: |
-        ls -dt {{ backup_dir }}/orchestrator_* 2>/dev/null | head -1
-      register: latest_orchestrator_backup
+      shell: ls -dt {{ backup_dir }}/orchestrator_* 2>/dev/null | head -1
+      register: latest_backup
       changed_when: false
 
-    - name: Find latest gateway backup (from gateway install dir snapshot)
-      shell: |
-        # Gateway is re-downloaded on deploy, so we check if a backup exists
-        # If not, we skip gateway rollback and leave current version in place
-        ls -dt {{ backup_dir }}/gateway_* 2>/dev/null | head -1
-      register: latest_gateway_backup
-      changed_when: false
-
-    - name: Show available backups
-      debug:
-        msg: |
-          Orchestrator backup: {{ latest_orchestrator_backup.stdout | default('NONE FOUND') }}
-          Gateway backup:      {{ latest_gateway_backup.stdout | default('NONE — will keep current') }}
-
-    - name: Fail if no orchestrator backup exists
+    - name: Fail if no backup exists
       fail:
         msg: >
           No orchestrator backup found in {{ backup_dir }}.
-          Run deploy.yml at least once to create a backup before rolling back.
-      when: latest_orchestrator_backup.stdout == ""
+          Run deploy.yml at least once first to create a backup.
+      when: latest_backup.stdout | trim == ""
 
-    - name: Set backup path facts
+    - name: Set backup path fact
       set_fact:
-        orch_backup_path: "{{ latest_orchestrator_backup.stdout | trim }}"
-        gw_backup_path: "{{ latest_gateway_backup.stdout | trim }}"
-        has_gw_backup: "{{ latest_gateway_backup.stdout | trim != '' }}"
+        orch_backup_path: "{{ latest_backup.stdout | trim }}"
+
+    - name: Show which backup will be restored
+      debug:
+        msg: "Restoring from: {{ orch_backup_path }}"
 
     # ─────────────────────────────────────────────
-    # STOP RUNNING SERVICES
+    # STOP SERVICES
     # ─────────────────────────────────────────────
 
     - name: Stop running services
@@ -85,66 +69,14 @@
         state: absent
 
     - name: Restore orchestrator from backup
-      shell: |
-        cp -r "{{ orch_backup_path }}" "{{ install_dir }}"
-        echo "Restored from: {{ orch_backup_path }}"
-      register: orch_restore
+      shell: cp -r "{{ orch_backup_path }}" "{{ install_dir }}"
       changed_when: true
-
-    - name: Fix permissions on restored orchestrator
-      file:
-        path: "{{ install_dir }}"
-        recurse: yes
-        mode: 'u+rwX,go+rX'
-      ignore_errors: yes
 
     - name: Ensure orchestrator binary is executable
       shell: |
         find "{{ install_dir }}" -name "go-ble-orchestrator" -type f -exec chmod +x {} \;
         find "{{ install_dir }}" -name "ecg_metrics" -type f -exec chmod +x {} \;
       changed_when: true
-
-    # ─────────────────────────────────────────────
-    # RESTORE GATEWAY (if backup exists)
-    # ─────────────────────────────────────────────
-
-    - name: Remove current gateway installation
-      file:
-        path: "{{ gateway_install_dir }}"
-        state: absent
-      when: has_gw_backup
-
-    - name: Restore gateway from backup
-      shell: |
-        cp -r "{{ gw_backup_path }}" "{{ gateway_install_dir }}"
-        chmod +x "{{ gateway_install_dir }}/gateway-dashboard"
-        echo "Restored from: {{ gw_backup_path }}"
-      register: gw_restore
-      when: has_gw_backup
-      changed_when: true
-
-    - name: Skip gateway restore (no backup)
-      debug:
-        msg: "No gateway backup found — keeping current gateway-dashboard installation."
-      when: not has_gw_backup
-
-    # ─────────────────────────────────────────────
-    # RESTORE SYSTEMD SERVICE FILES (if missing)
-    # ─────────────────────────────────────────────
-
-    - name: Restore orchestrator service file from backup (if main one is missing)
-      shell: |
-        # If backup has a service file inside it, use it; otherwise keep existing
-        BACKUP_SVC="{{ orch_backup_path }}/go-ble-orchestrator.service"
-        SYSTEM_SVC="{{ orchestrator_service_file }}"
-        if [ ! -f "${SYSTEM_SVC}" ] && [ -f "${BACKUP_SVC}" ]; then
-          cp "${BACKUP_SVC}" "${SYSTEM_SVC}"
-          echo "Restored service file from backup"
-        else
-          echo "Service file already exists or not in backup — skipping"
-        fi
-      register: svc_restore
-      changed_when: "'Restored service file' in svc_restore.stdout"
 
     # ─────────────────────────────────────────────
     # RESTART SERVICES
@@ -159,15 +91,12 @@
         name: "{{ service_name }}"
         state: started
         enabled: yes
-      register: orch_start
-      ignore_errors: yes
 
     - name: Enable and start gateway-dashboard
       systemd:
         name: "{{ gateway_service_name }}"
         state: started
         enabled: yes
-      register: gw_start
       ignore_errors: yes
 
     # ─────────────────────────────────────────────
@@ -176,8 +105,10 @@
 
     - name: Check service status after rollback
       shell: |
-        echo "orchestrator=$(systemctl is-active {{ service_name }} 2>/dev/null || echo inactive)"
-        echo "gateway=$(systemctl is-active {{ gateway_service_name }} 2>/dev/null || echo inactive)"
+        orch=$(systemctl is-active {{ service_name }} 2>/dev/null || echo inactive)
+        gw=$(systemctl is-active {{ gateway_service_name }} 2>/dev/null || echo inactive)
+        echo "orchestrator=${orch}"
+        echo "gateway=${gw}"
       register: rollback_status
       changed_when: false
 
@@ -186,38 +117,28 @@
         orch_state: "{{ rollback_status.stdout | regex_search('orchestrator=(.+)', '\\1') | first | default('unknown') }}"
         gw_state: "{{ rollback_status.stdout | regex_search('gateway=(.+)', '\\1') | first | default('unknown') }}"
 
-    - name: Display rollback summary
+    - name: Rollback summary
       debug:
         msg: |
           ════════════════════════════════════════════════════
                          ROLLBACK COMPLETE
           ════════════════════════════════════════════════════
-           Host:                   {{ inventory_hostname }}
-           Orchestrator restored:  {{ orch_backup_path | basename }}
-             Service status:       {{ orch_state | upper }}
-           Gateway:
-             {% if has_gw_backup %}
-             Restored from:        {{ gw_backup_path | basename }}
-             {% else %}
-             No backup — kept current version
-             {% endif %}
-             Service status:       {{ gw_state | upper }}
+           Host:                {{ inventory_hostname }}
+           Restored from:       {{ orch_backup_path | basename }}
+           Orchestrator status: {{ orch_state | upper }}
+           Gateway status:      {{ gw_state | upper }}
           ════════════════════════════════════════════════════
-          {% if orch_state != 'active' or gw_state != 'active' %}
-          ⚠️  One or more services are not active.
-          Check logs: sudo journalctl -u {{ service_name }} -n 50
-          {% endif %}
 
     - name: Warn if orchestrator not running after rollback
       debug:
         msg: >
-          WARNING: go-ble-orchestrator is {{ orch_state }} after rollback.
-          Check: sudo journalctl -u {{ service_name }} -n 50
+          WARNING: go-ble-orchestrator is {{ orch_state }}.
+          Check logs: sudo journalctl -u {{ service_name }} -n 50
       when: orch_state != 'active'
 
     - name: Warn if gateway not running after rollback
       debug:
         msg: >
-          WARNING: gateway-dashboard is {{ gw_state }} after rollback.
-          Check: sudo journalctl -u {{ gateway_service_name }} -n 50
+          WARNING: gateway-dashboard is {{ gw_state }}.
+          Check logs: sudo journalctl -u {{ gateway_service_name }} -n 50
       when: gw_state != 'active'
