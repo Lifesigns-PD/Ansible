@@ -97,10 +97,22 @@
 
     - name: "[4/9] Stop and remove old services safely"
       shell: |
-        systemctl stop {{ service_name }} || true
-        systemctl stop {{ gateway_service_name }} || true
+        # Only try to stop if the service unit file actually exists
+        if [ -f "/etc/systemd/system/{{ service_name }}.service" ] || [ -f "/lib/systemd/system/{{ service_name }}.service" ]; then
+          systemctl stop {{ service_name }} || true
+          systemctl disable {{ service_name }} || true
+        fi
+        
+        if [ -f "/etc/systemd/system/{{ gateway_service_name }}.service" ] || [ -f "/lib/systemd/system/{{ gateway_service_name }}.service" ]; then
+          systemctl stop {{ gateway_service_name }} || true
+          systemctl disable {{ gateway_service_name }} || true
+        fi
+        
+        # Kill any stray processes
         pkill -f "{{ service_name }}" || true
         pkill -f "{{ gateway_service_name }}" || true
+        
+        # Remove directories
         rm -rf "{{ install_dir }}"
         rm -rf "{{ gateway_install_dir }}"
       changed_when: true
@@ -127,7 +139,7 @@
       register: orchestrator_meta
       changed_when: false
 
-    - name: "[6/9] Extract Orchestrator Details (FIXED: Native Regex)"
+    - name: "[6/9] Extract Orchestrator Details (Native Filters)"
       set_fact:
         orchestrator_zip_url: "{{ orchestrator_meta.stdout | regex_search('https://[^\" ]*Installationsmain[^\" ]*\\.zip') }}"
         orchestrator_version: "{{ orchestrator_meta.stdout | regex_findall('\"tag_name\":\\s*\"([^\"]+)\"') | first | default('unknown') }}"
@@ -160,7 +172,7 @@
       register: gateway_meta
       changed_when: false
 
-    - name: "[7/9] Extract Gateway Details (FIXED: Native Regex)"
+    - name: "[7/9] Extract Gateway Details (Native Filters)"
       set_fact:
         gateway_zip_url: "{{ gateway_meta.stdout | regex_search('https://[^\" ]*linux_amd64\\.zip') }}"
         gateway_version: "{{ gateway_meta.stdout | regex_findall('\"tag_name\":\\s*\"([^\"]+)\"') | first | default('unknown') }}"
@@ -217,8 +229,8 @@
 
     - name: "[9/9] Final Service Check"
       shell: |
-        echo "Orchestrator: $(systemctl is-active {{ service_name }})"
-        echo "Gateway: $(systemctl is-active {{ gateway_service_name }})"
+        echo "Orchestrator: $(systemctl is-active {{ service_name }} 2>/dev/null || echo 'inactive')"
+        echo "Gateway: $(systemctl is-active {{ gateway_service_name }} 2>/dev/null || echo 'inactive')"
       register: final_status
       changed_when: false
 
