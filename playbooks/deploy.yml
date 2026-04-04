@@ -14,17 +14,25 @@
         dest: "/tmp/setup.sh"
         mode: '0755'
 
-    - name: Patch setup.sh (Hotfix Regex and Pipefail)
-      # setup.sh crashes due to `set -e` and a failing grep (looking for a hyphen).
-      # This fixes the regex and safety rules directly in the downloaded script before it runs.
+    - name: Patch setup.sh (Hotfix Regex, Pipefail, and Interactive Prompts)
+      # This fixes the regex, safety rules, and automatically answers the prompts 
+      # so the script never hangs waiting for user input.
       shell: |
+        # 1. Fix the regex and pipefail crashing issues
         sed -i 's/Installationsmain-\[\^"\]+/Installationsmain\[\^"\]*/g' /tmp/setup.sh
         sed -i 's/set -euo pipefail/set -uo pipefail/g' /tmp/setup.sh
+        
+        # 2. Bypass interactive prompts by hardcoding the variables
+        # Auto-confirm directory removals
+        sed -i 's/read -r -p "${prompt_message}" response/response="yes"/g' /tmp/setup.sh
+        # Auto-confirm gateway update
+        sed -i 's/read -r -p "Additionally you need to update the gateway-dashboard version. Type yes to continue: " update_gateway_dashboard/update_gateway_dashboard="yes"/g' /tmp/setup.sh
+        # Auto-decline the nano config editor
+        sed -i 's/read -r -p "Do you want to edit gateway-dashboard config.json now? Type yes to open sudo nano: " edit_gateway_config/edit_gateway_config="no"/g' /tmp/setup.sh
 
-    - name: Execute setup.sh with automated responses (Bash inside YML)
-      shell: |
-        # Pipe "yes" to remove old dirs, "yes" to update gateway, "no" to skip nano editor
-        printf "yes\nyes\nno\n" | bash /tmp/setup.sh
+    - name: Execute setup.sh in Debug Mode
+      # Using bash -x prints every command executed to the log for easy debugging
+      shell: bash -x /tmp/setup.sh
       register: bash_output
       # This forces the script to run even if Semaphore is accidentally in Dry Run mode
       check_mode: no
