@@ -40,4 +40,5 @@ env/
 .env.local
 
 semaphore.log
-nohup.out
+scripts/semaphorecleanup.py
+create.sh

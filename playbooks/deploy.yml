@@ -51,7 +51,7 @@
       when: whoami_result.stdout != 'root'
 
     # ─────────────────────────────────────────────
-    # STEP 2: INSTALL PREREQUISITES
+    # STEP 2: INSTALL PREREQUISITES & ANSIBLE
     # ─────────────────────────────────────────────
 
     - name: "[2/9] Release any held apt/dpkg locks"
@@ -64,11 +64,34 @@
         DEBIAN_FRONTEND=noninteractive dpkg --configure -a 2>/dev/null || true
       changed_when: false
 
-    - name: "[2/9] Ensure required packages (curl, unzip, zip, sudo) are installed"
+    - name: "[2/9] Check if Ansible is already present"
+      command: ansible --version
+      register: ansible_check
+      ignore_errors: yes
+      changed_when: false
+
+    - name: "[2/9] Ensure required packages (curl, unzip, zip, sudo, ansible) are installed"
       apt:
-        name: [curl, unzip, zip, sudo]
+        name: 
+          - curl
+          - unzip
+          - zip
+          - sudo
+          - ansible
+          - python3-pip
+          - software-properties-common
         state: present
         update_cache: yes
+      # The apt module handles the "yes" for prompts automatically
+
+    - name: "[2/9] Verify Ansible installation"
+      command: ansible --version
+      register: ansible_version_output
+      changed_when: false
+
+    - name: "[2/9] Show Ansible version on target"
+      debug:
+        msg: "Ansible on target: {{ ansible_version_output.stdout_lines[0] }}"
 
     # ─────────────────────────────────────────────
     # STEP 3: BACKUP
@@ -240,6 +263,7 @@
            SYSTEM STATUS:
              OS: {{ ansible_distribution }} {{ ansible_distribution_version }}
              Target: {{ inventory_hostname }}
+             Ansible on Target: {{ ansible_version_output.stdout_lines[0] }}
           
            ORCHESTRATOR:
              Version: {{ orchestrator_version }}
