@@ -25,13 +25,15 @@
     # PREFLIGHT CHECKS
     # ─────────────────────────────────────────────
 
-    - name: Check required commands exist (curl, unzip, sudo)
-      shell: "command -v {{ item }}"
-      loop:
-        - curl
-        - unzip
-        - sudo
-      register: cmd_check
+    - name: Ensure required packages (curl, unzip, zip, sudo) are installed
+      apt:
+        name:
+          - curl
+          - unzip
+          - zip
+          - sudo
+        state: present
+        update_cache: yes
 
     - name: Check OS is Ubuntu 22.04+
       shell: |
@@ -48,6 +50,7 @@
     - name: Show OS Status
       debug:
         msg: "System Check: {{ os_check.stdout }}"
+        
     - name: Show OS
       debug:
         msg: "{{ os_check.stdout }}"
@@ -145,7 +148,7 @@
 
     - name: Extract orchestrator zip URL
       shell: |
-        echo '{{ release_json.stdout }}' | grep -oP 'https://[^"]*Installationsmain[^"]*\.zip' | head -n 1
+        printf '%s\n' '{{ release_json.stdout }}' | grep -oE '"browser_download_url":[[:space:]]*"[^"]+Installationsmain[^"]*\.zip"' | head -n 1 | cut -d '"' -f 4
       register: zip_url_result
 
     - name: Extract orchestrator tag name
@@ -177,8 +180,12 @@
         msg: "Unzipped bundle does not contain Installationsmain/ directory."
       when: "'MISSING' in bundle_check.stdout"
 
-    - name: Make DeviceManager_Install.sh executable
-      shell: chmod +x "{{ work_dir }}/Installationsmain/DeviceManager_Install.sh"
+    - name: Make installation scripts and metrics executable
+      shell: |
+        cd "{{ work_dir }}/Installationsmain"
+        chmod +x DeviceManager_Install.sh
+        chmod +x DeviceManagerUninstall.sh
+        chmod +x ecg_metrics
 
     - name: Run DeviceManager_Install.sh
       shell: |
@@ -189,6 +196,18 @@
     - name: Show installer output
       debug:
         var: installer_output.stdout_lines
+
+    - name: Verify go-ble-orchestrator service logs
+      shell: journalctl -u go-ble-orchestrator.service -n 20 --no-pager
+      register: service_logs
+      ignore_errors: yes
+
+    - name: Show service logs
+      debug:
+        var: service_logs.stdout_lines
+
+    - name: Copy ecg_metrics to installation directory
+      shell: sudo cp "{{ work_dir }}/Installationsmain/ecg_metrics" "{{ install_dir }}/"
 
     - name: Enable go-ble-orchestrator service
       shell: sudo systemctl enable "{{ service_name }}" || true
