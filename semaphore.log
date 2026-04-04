@@ -405,3 +405,95 @@ time="2026-04-04T12:07:49+05:30" level=info msg="Task status updated" context=ta
 time="2026-04-04T12:08:15+05:30" level=info msg="Task status updated" context=task_logger status=stopping task_id=16
 time="2026-04-04T12:08:15+05:30" level=info msg="Task status updated" context=task_logger status=stopped task_id=16
 time="2026-04-04T12:08:15+05:30" level=info msg="Stopped running task deploy" task_id=16
+time="2026-04-04T12:10:04+05:30" level=info msg="Task added to queue" task_id=17 task_name=deploy
+time="2026-04-04T12:10:04+05:30" level=info msg="Set resource locker" context=task_pool task_id=17 task_name=deploy
+time="2026-04-04T12:10:04+05:30" level=info msg="Task started" context=task_pool task_id=17 task_name=deploy
+time="2026-04-04T12:10:05+05:30" level=info msg="Task status updated" context=task_logger status=starting task_id=17
+time="2026-04-04T12:10:05+05:30" level=info msg="Task status updated" context=task_logger status=running task_id=17
+time="2026-04-04T12:10:05+05:30" level=warning msg="Failed to run task" context=task_runner error="mkdir /mnt/c/Users/LifesignsPD/Documents/Orchestrator/CassiaConnectionTest/Ansible/ansible/playbooks/project_1: file exists" task_id=17 task_status=running
+time="2026-04-04T12:10:05+05:30" level=info msg="Task status updated" context=task_logger status=error task_id=17
+time="2026-04-04T12:10:05+05:30" level=info msg="Stopped running task deploy" task_id=17
+time="2026-04-04T12:15:09+05:30" level=info msg="Task added to queue" task_id=18 task_name=deploy
+time="2026-04-04T12:15:10+05:30" level=info msg="Set resource locker" context=task_pool task_id=18 task_name=deploy
+time="2026-04-04T12:15:10+05:30" level=info msg="Task started" context=task_pool task_id=18 task_name=deploy
+time="2026-04-04T12:15:11+05:30" level=info msg="Task status updated" context=task_logger status=starting task_id=18
+time="2026-04-04T12:15:11+05:30" level=info msg="Task status updated" context=task_logger status=running task_id=18
+time="2026-04-04T12:15:11+05:30" level=warning msg="Failed to run task" context=task_runner error="mkdir /mnt/c/Users/LifesignsPD/Documents/Orchestrator/CassiaConnectionTest/Ansible/ansible/playbooks/project_1: file exists" task_id=18 task_status=running
+time="2026-04-04T12:15:11+05:30" level=info msg="Task status updated" context=task_logger status=error task_id=18
+time="2026-04-04T12:15:11+05:30" level=info msg="Stopped running task deploy" task_id=18
+time="2026-04-04T12:16:55+05:30" level=error msg="failed to create project temp directory" context=git error="mkdir /mnt/c/Users/LifesignsPD/Documents/Orchestrator/CassiaConnectionTest/Ansible/ansible/playbooks/project_1: file exists"
+time="2026-04-04T12:16:55+05:30" level=error msg="chdir /mnt/c/Users/LifesignsPD/Documents/Orchestrator/CassiaConnectionTest/Ansible/ansible/playbooks/project_1: no such file or directory"
+goroutine 1535 [running]:
+runtime/debug.Stack()
+	/opt/hostedtoolcache/go/1.25.8/x64/src/runtime/debug/stack.go:26 +0x5e
+runtime/debug.PrintStack()
+	/opt/hostedtoolcache/go/1.25.8/x64/src/runtime/debug/stack.go:18 +0x13
+github.com/semaphoreui/semaphore/api/helpers.WriteError({0x2df3da0, 0xc000713680}, {0x2dec220, 0xc0003d40f0})
+	/home/runner/work/semaphore/semaphore/api/helpers/write_response.go:60 +0x345
+github.com/semaphoreui/semaphore/api/projects.(*RepositoryController).GetRepositoryBranches(0xc0002a2da0, {0x2df3da0, 0xc000713680}, 0xc0002c4500?)
+	/home/runner/work/semaphore/semaphore/api/projects/repository.go:71 +0x3a5
+net/http.HandlerFunc.ServeHTTP(0xc0003ff540?, {0x2df3da0?, 0xc000713680?}, 0x138ede0?)
+	/opt/hostedtoolcache/go/1.25.8/x64/src/net/http/server.go:2322 +0x29
+github.com/semaphoreui/semaphore/api/projects.RepositoryMiddleware.func1({0x2df3da0, 0xc000713680}, 0xc0003ff540)
+	/home/runner/work/semaphore/semaphore/api/projects/repository.go:30 +0x2c2
+net/http.HandlerFunc.ServeHTTP(0xc00076f408?, {0x2df3da0?, 0xc000713680?}, 0xc00047b920?)
+	/opt/hostedtoolcache/go/1.25.8/x64/src/net/http/server.go:2322 +0x29
+github.com/semaphoreui/semaphore/api.Route.GetMustCanMiddleware.func5.1({0x2df3da0, 0xc000713680}, 0xc0003ff540)
+	/home/runner/work/semaphore/semaphore/api/projects/project.go:98 +0x11e
+net/http.HandlerFunc.ServeHTTP(0xc0003ff400?, {0x2df3da0?, 0xc000713680?}, 0x1370bc0?)
+	/opt/hostedtoolcache/go/1.25.8/x64/src/net/http/server.go:2322 +0x29
+github.com/semaphoreui/semaphore/api/projects.ProjectMiddleware.func1({0x2df3da0, 0xc000713680}, 0xc0003fef00)
+	/home/runner/work/semaphore/semaphore/api/projects/project.go:79 +0x797
+net/http.HandlerFunc.ServeHTTP(0x2df3da0?, {0x2df3da0?, 0xc000713680?}, 0x1230a00?)
+	/opt/hostedtoolcache/go/1.25.8/x64/src/net/http/server.go:2322 +0x29
+github.com/semaphoreui/semaphore/api.authentication.func1({0x2df3da0, 0xc000713680}, 0x1?)
+	/home/runner/work/semaphore/semaphore/api/auth.go:280 +0x50
+net/http.HandlerFunc.ServeHTTP(0x133c720?, {0x2df3da0?, 0xc000713680?}, 0xc?)
+	/opt/hostedtoolcache/go/1.25.8/x64/src/net/http/server.go:2322 +0x29
+github.com/semaphoreui/semaphore/api.JSONMiddleware.func1({0x2df3da0, 0xc000713680}, 0xc0003fedc0)
+	/home/runner/work/semaphore/semaphore/api/router.go:56 +0xf3
+net/http.HandlerFunc.ServeHTTP(0x121bac0?, {0x2df3da0?, 0xc000713680?}, 0x6?)
+	/opt/hostedtoolcache/go/1.25.8/x64/src/net/http/server.go:2322 +0x29
+github.com/semaphoreui/semaphore/api.StoreMiddleware.func1.1()
+	/home/runner/work/semaphore/semaphore/api/router.go:47 +0x28
+github.com/semaphoreui/semaphore/db.StoreSession({0x2e12220, 0xc0001453b0}, {0xc0009a0be0, 0xc}, 0xc00076f7c0)
+	/home/runner/work/semaphore/semaphore/db/Store.go:760 +0x5f
+github.com/semaphoreui/semaphore/api.StoreMiddleware.func1({0x2df3da0, 0xc000713680}, 0xc0003fedc0)
+	/home/runner/work/semaphore/semaphore/api/router.go:46 +0x114
+net/http.HandlerFunc.ServeHTTP(0xc0003fec80?, {0x2df3da0?, 0xc000713680?}, 0x12ae780?)
+	/opt/hostedtoolcache/go/1.25.8/x64/src/net/http/server.go:2322 +0x29
+github.com/semaphoreui/semaphore/cli/cmd.runService.func2.1({0x2df3da0, 0xc000713680}, 0xc00047a750?)
+	/home/runner/work/semaphore/semaphore/cli/cmd/root.go:209 +0x11b
+net/http.HandlerFunc.ServeHTTP(0xc00076f801?, {0x2df3da0?, 0xc000713680?}, 0x41d265?)
+	/opt/hostedtoolcache/go/1.25.8/x64/src/net/http/server.go:2322 +0x29
+github.com/semaphoreui/semaphore/api.Route.CORSMethodMiddleware.func2.1({0x2df3da0, 0xc000713680}, 0xc0003fe8c0)
+	/home/runner/work/semaphore/semaphore/vendor/github.com/gorilla/mux/middleware.go:51 +0x87
+net/http.HandlerFunc.ServeHTTP(0xc0003fe780?, {0x2df3da0?, 0xc000713680?}, 0x722549523f30?)
+	/opt/hostedtoolcache/go/1.25.8/x64/src/net/http/server.go:2322 +0x29
+github.com/gorilla/mux.(*Router).ServeHTTP(0xc0002ae180, {0x2df3da0, 0xc000713680}, 0xc0003fe640)
+	/home/runner/work/semaphore/semaphore/vendor/github.com/gorilla/mux/mux.go:212 +0x1e2
+github.com/semaphoreui/semaphore/cli/cmd.runService.ProxyHeaders.func4({0x2df3da0, 0xc000713680}, 0xc0003fe640)
+	/home/runner/work/semaphore/semaphore/vendor/github.com/gorilla/handlers/proxy_headers.go:59 +0x143
+net/http.HandlerFunc.ServeHTTP(0xc00018bcc4?, {0x2df3da0?, 0xc000713680?}, 0x4527c0?)
+	/opt/hostedtoolcache/go/1.25.8/x64/src/net/http/server.go:2322 +0x29
+github.com/semaphoreui/semaphore/cli/cmd.runService.cropTrailingSlashMiddleware.func6({0x2df3da0, 0xc000713680}, 0xc0003fe640)
+	/home/runner/work/semaphore/semaphore/cli/cmd/server.go:27 +0xb9
+net/http.HandlerFunc.ServeHTTP(0x479339?, {0x2df3da0?, 0xc000713680?}, 0xc00076fb68?)
+	/opt/hostedtoolcache/go/1.25.8/x64/src/net/http/server.go:2322 +0x29
+net/http.serverHandler.ServeHTTP({0xc0008046c0?}, {0x2df3da0?, 0xc000713680?}, 0x6?)
+	/opt/hostedtoolcache/go/1.25.8/x64/src/net/http/server.go:3340 +0x8e
+net/http.(*conn).serve(0xc0000bd200, {0x2df61f0, 0xc0005745a0})
+	/opt/hostedtoolcache/go/1.25.8/x64/src/net/http/server.go:2109 +0x665
+created by net/http.(*Server).Serve in goroutine 1
+	/opt/hostedtoolcache/go/1.25.8/x64/src/net/http/server.go:3493 +0x485
+time="2026-04-04T12:17:10+05:30" level=info msg="Task added to queue" task_id=19 task_name=deploy
+time="2026-04-04T12:17:10+05:30" level=info msg="Set resource locker" context=task_pool task_id=19 task_name=deploy
+time="2026-04-04T12:17:10+05:30" level=info msg="Task started" context=task_pool task_id=19 task_name=deploy
+time="2026-04-04T12:17:12+05:30" level=info msg="Task status updated" context=task_logger status=starting task_id=19
+time="2026-04-04T12:17:12+05:30" level=info msg="Task status updated" context=task_logger status=running task_id=19
+time="2026-04-04T12:17:12+05:30" level=warning msg="Failed to run task" context=task_runner error="mkdir /mnt/c/Users/LifesignsPD/Documents/Orchestrator/CassiaConnectionTest/Ansible/ansible/playbooks/project_1: file exists" task_id=19 task_status=running
+time="2026-04-04T12:17:12+05:30" level=info msg="Task status updated" context=task_logger status=error task_id=19
+time="2026-04-04T12:17:12+05:30" level=info msg="Stopped running task deploy" task_id=19
+
+
+
