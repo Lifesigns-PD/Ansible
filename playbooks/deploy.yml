@@ -97,20 +97,17 @@
 
     - name: "[4/9] Stop and remove old services safely"
       shell: |
-        # Only try to stop if the service unit file actually exists
-        if [ -f "/etc/systemd/system/{{ service_name }}.service" ] || [ -f "/lib/systemd/system/{{ service_name }}.service" ]; then
-          systemctl stop {{ service_name }} || true
-          systemctl disable {{ service_name }} || true
-        fi
+        # Stop and disable existing services
+        for svc in "{{ service_name }}" "{{ gateway_service_name }}"; do
+          if systemctl list-unit-files "${svc}.service" >/dev/null 2>&1; then
+            systemctl stop "${svc}" || true
+            systemctl disable "${svc}" || true
+          fi
+        done
         
-        if [ -f "/etc/systemd/system/{{ gateway_service_name }}.service" ] || [ -f "/lib/systemd/system/{{ gateway_service_name }}.service" ]; then
-          systemctl stop {{ gateway_service_name }} || true
-          systemctl disable {{ gateway_service_name }} || true
-        fi
-        
-        # Kill any stray processes
-        pkill -f "{{ service_name }}" || true
-        pkill -f "{{ gateway_service_name }}" || true
+        # Kill stray processes safely using exact match to avoid killing this shell
+        pkill -x "{{ service_name }}" || true
+        pkill -x "{{ gateway_service_name }}" || true
         
         # Remove directories
         rm -rf "{{ install_dir }}"
@@ -142,7 +139,7 @@
     - name: "[6/9] Extract Orchestrator Details (Native Filters)"
       set_fact:
         orchestrator_zip_url: "{{ orchestrator_meta.stdout | regex_search('https://[^\" ]*Installationsmain[^\" ]*\\.zip') }}"
-        orchestrator_version: "{{ orchestrator_meta.stdout | regex_findall('\"tag_name\":\\s*\"([^\"]+)\"') | first | default('unknown') }}"
+        orchestrator_version: "{{ (orchestrator_meta.stdout | regex_search('\"tag_name\":\\s*\"([^\"]+)\"', '\\1')) | first | default('unknown') }}"
 
     - name: "[6/9] Download and Unzip Orchestrator"
       shell: |
@@ -175,7 +172,7 @@
     - name: "[7/9] Extract Gateway Details (Native Filters)"
       set_fact:
         gateway_zip_url: "{{ gateway_meta.stdout | regex_search('https://[^\" ]*linux_amd64\\.zip') }}"
-        gateway_version: "{{ gateway_meta.stdout | regex_findall('\"tag_name\":\\s*\"([^\"]+)\"') | first | default('unknown') }}"
+        gateway_version: "{{ (gateway_meta.stdout | regex_search('\"tag_name\":\\s*\"([^\"]+)\"', '\\1')) | first | default('unknown') }}"
 
     - name: "[7/9] Download and Prepare Gateway"
       shell: |
