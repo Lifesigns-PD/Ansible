@@ -1,19 +1,20 @@
 ---
 # uninstall.yml
-# Fully automated uninstallation for go-ble-orchestrator.
-# Does NOT affect the gateway-dashboard.
+# Fully automated uninstallation for both go-ble-orchestrator and gateway-dashboard.
+# This will completely remove both services and their associated files from /opt.
 
-- name: Uninstall BLE Orchestrator Natively
+- name: Uninstall BLE Orchestrator & Gateway Dashboard Natively
   hosts: all
   become: yes
   become_method: sudo
   become_user: root
-  gather_facts: no
+  gather_facts: yes
 
   vars:
-    service_name: "go-ble-orchestrator"
-    install_dir: "/opt/go-ble-orchestrator"
-    service_file: "/etc/systemd/system/{{ service_name }}.service"
+    orchestrator_service: "go-ble-orchestrator"
+    orchestrator_dir: "/opt/go-ble-orchestrator"
+    gateway_service: "gateway-dashboard"
+    gateway_dir: "/opt/gateway-dashboard"
 
   tasks:
 
@@ -21,35 +22,44 @@
     # STEP 1: SERVICE TERMINATION
     # ─────────────────────────────────────────────
 
-    - name: "[1/4] Stop and disable the service"
+    - name: "[1/4] Stop and disable services safely"
       shell: |
-        if systemctl list-unit-files "{{ service_name }}.service" >/dev/null 2>&1; then
-          echo "Stopping {{ service_name }}..."
-          systemctl stop "{{ service_name }}" || true
-          systemctl disable "{{ service_name }}" || true
-        else
-          echo "Service not found, skipping stop."
-        fi
+        for svc in "{{ orchestrator_service }}" "{{ gateway_service }}"; do
+          # Check if service is loaded before attempting to stop
+          if systemctl list-unit-files "${svc}.service" >/dev/null 2>&1; then
+            echo "Stopping ${svc}..."
+            systemctl stop "${svc}" || true
+            systemctl disable "${svc}" || true
+          fi
+        done
       register: stop_result
       changed_when: "'Stopping' in stop_result.stdout"
 
     - name: "[1/4] Kill any hanging processes"
-      shell: pkill -x "{{ service_name }}" || true
+      shell: |
+        pkill -x "{{ orchestrator_service }}" || true
+        pkill -x "{{ gateway_service }}" || true
       changed_when: false
 
     # ─────────────────────────────────────────────
     # STEP 2: FILE REMOVAL
     # ─────────────────────────────────────────────
 
-    - name: "[2/4] Remove systemd service file"
+    - name: "[2/4] Remove systemd service files"
       file:
-        path: "{{ service_file }}"
+        path: "/etc/systemd/system/{{ item }}.service"
         state: absent
+      with_items:
+        - "{{ orchestrator_service }}"
+        - "{{ gateway_service }}"
 
-    - name: "[2/4] Remove installation directory"
+    - name: "[2/4] Remove installation directories from /opt"
       file:
-        path: "{{ install_dir }}"
+        path: "{{ item }}"
         state: absent
+      with_items:
+        - "{{ orchestrator_dir }}"
+        - "{{ gateway_dir }}"
 
     # ─────────────────────────────────────────────
     # STEP 3: SYSTEM CLEANUP
@@ -63,29 +73,40 @@
     # STEP 4: VERIFICATION
     # ─────────────────────────────────────────────
 
-    - name: "[4/4] Verify removal"
+    - name: "[4/4] Verify Orchestrator removal"
       shell: |
-        if [ ! -d "{{ install_dir }}" ] && ! systemctl list-unit-files "{{ service_name }}.service" >/dev/null 2>&1; then
-          echo "SUCCESS"
+        if [ ! -d "{{ orchestrator_dir }}" ] && ! systemctl list-unit-files "{{ orchestrator_service }}.service" >/dev/null 2>&1; then
+          echo "CLEAN"
         else
           echo "REMNANTS_FOUND"
         fi
-      register: verify_result
+      register: orch_verify
       changed_when: false
 
-    - name: "Uninstallation Summary"
+    - name: "[4/4] Verify Gateway removal"
+      shell: |
+        if [ ! -d "{{ gateway_dir }}" ] && ! systemctl list-unit-files "{{ gateway_service }}.service" >/dev/null 2>&1; then
+          echo "CLEAN"
+        else
+          echo "REMNANTS_FOUND"
+        fi
+      register: gw_verify
+      changed_when: false
+
+    - name: "Full Uninstallation Summary"
       debug:
         msg: |
           ════════════════════════════════════════════════════════
                        UNINSTALLATION COMPLETE
           ════════════════════════════════════════════════════════
            Target Host: {{ inventory_hostname }}
-           Component:   {{ service_name }}
           
-           REMOVAL STATUS:
-             Service File: DELETED
-             Binary Folder: DELETED
+           COMPONENTS REMOVED:
+             1. {{ orchestrator_service }} -> status: {{ orch_verify.stdout }}
+             2. {{ gateway_service }}     -> status: {{ gw_verify.stdout }}
+          
+           REMOVAL DETAILS:
+             Service Files: DELETED
+             Binary Folders: DELETED (/opt)
              Processes:    CLEANED
-          
-           FINAL VERIFICATION: {{ verify_result.stdout }}
           ════════════════════════════════════════════════════════
