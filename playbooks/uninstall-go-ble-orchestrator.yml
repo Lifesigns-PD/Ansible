@@ -1,0 +1,91 @@
+---
+# uninstall.yml
+# Fully automated uninstallation for go-ble-orchestrator.
+# Does NOT affect the gateway-dashboard.
+
+- name: Uninstall BLE Orchestrator Natively
+  hosts: all
+  become: yes
+  become_method: sudo
+  become_user: root
+  gather_facts: no
+
+  vars:
+    service_name: "go-ble-orchestrator"
+    install_dir: "/opt/go-ble-orchestrator"
+    service_file: "/etc/systemd/system/{{ service_name }}.service"
+
+  tasks:
+
+    # ─────────────────────────────────────────────
+    # STEP 1: SERVICE TERMINATION
+    # ─────────────────────────────────────────────
+
+    - name: "[1/4] Stop and disable the service"
+      shell: |
+        if systemctl list-unit-files "{{ service_name }}.service" >/dev/null 2>&1; then
+          echo "Stopping {{ service_name }}..."
+          systemctl stop "{{ service_name }}" || true
+          systemctl disable "{{ service_name }}" || true
+        else
+          echo "Service not found, skipping stop."
+        fi
+      register: stop_result
+      changed_when: "'Stopping' in stop_result.stdout"
+
+    - name: "[1/4] Kill any hanging processes"
+      shell: pkill -x "{{ service_name }}" || true
+      changed_when: false
+
+    # ─────────────────────────────────────────────
+    # STEP 2: FILE REMOVAL
+    # ─────────────────────────────────────────────
+
+    - name: "[2/4] Remove systemd service file"
+      file:
+        path: "{{ service_file }}"
+        state: absent
+
+    - name: "[2/4] Remove installation directory"
+      file:
+        path: "{{ install_dir }}"
+        state: absent
+
+    # ─────────────────────────────────────────────
+    # STEP 3: SYSTEM CLEANUP
+    # ─────────────────────────────────────────────
+
+    - name: "[3/4] Reload systemd daemon"
+      shell: systemctl daemon-reload
+      changed_when: false
+
+    # ─────────────────────────────────────────────
+    # STEP 4: VERIFICATION
+    # ─────────────────────────────────────────────
+
+    - name: "[4/4] Verify removal"
+      shell: |
+        if [ ! -d "{{ install_dir }}" ] && ! systemctl list-unit-files "{{ service_name }}.service" >/dev/null 2>&1; then
+          echo "SUCCESS"
+        else
+          echo "REMNANTS_FOUND"
+        fi
+      register: verify_result
+      changed_when: false
+
+    - name: "Uninstallation Summary"
+      debug:
+        msg: |
+          ════════════════════════════════════════════════════════
+                       UNINSTALLATION COMPLETE
+          ════════════════════════════════════════════════════════
+           Target Host: {{ inventory_hostname }}
+           Component:   {{ service_name }}
+          
+           REMOVAL STATUS:
+             Service File: DELETED
+             Binary Folder: DELETED
+             Processes:    CLEANED
+          
+           FINAL VERIFICATION: {{ verify_result.stdout }}
+          ════════════════════════════════════════════════════════
