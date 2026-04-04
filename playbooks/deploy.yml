@@ -1,8 +1,8 @@
 ---
 # deploy.yml
-# Deploys go-ble-orchestrator + gateway-dashboard from GitHub releases.
-# Semaphore: set User Credentials + Sudo Credentials both to MPR-SSH in the inventory.
-# Inventory text should only be:
+# Fully self-contained deployment - no manual steps required on the target machine.
+# Uses raw shell commands throughout to avoid apt module permission issues.
+# Inventory:
 #   [my_target]
 #   172.16.22.67 ansible_ssh_common_args='-o StrictHostKeyChecking=no'
 
@@ -18,6 +18,7 @@
     gateway_service_name: "gateway-dashboard"
     gateway_install_dir: "/opt/gateway-dashboard"
     gateway_service_file: "/etc/systemd/system/gateway-dashboard.service"
+    orchestrator_service_file: "/etc/systemd/system/go-ble-orchestrator.service"
     backup_dir: "/opt/backups"
     repo_api_url: "https://api.github.com/repos/Lifesigns-PD/orchestrator-releases/releases/latest"
     gateway_repo_api_url: "https://api.github.com/repos/PD-dev-2025/gateway-dashboard-release/releases/latest"
@@ -25,290 +26,357 @@
   tasks:
 
     # ─────────────────────────────────────────────
-    # PREFLIGHT
+    # STEP 1: PREFLIGHT CHECKS
     # ─────────────────────────────────────────────
 
-    - name: Assert OS is Ubuntu 22.04+
+    - name: "[1/9] Assert OS is Ubuntu 22.04+"
       assert:
         that:
           - ansible_distribution == "Ubuntu"
           - ansible_distribution_major_version | int >= 22
         fail_msg: "Requires Ubuntu 22.04+. Found: {{ ansible_distribution }} {{ ansible_distribution_version }}"
 
-    - name: Install required packages
-      apt:
-        name: [curl, unzip]
-        state: present
-        update_cache: yes
+    - name: "[1/9] Verify running as root (become check)"
+      shell: whoami
+      register: whoami_result
+      changed_when: false
+
+    - name: "[1/9] Show effective user"
+      debug:
+        msg: "Running as: {{ whoami_result.stdout }} (must be root)"
+
+    - name: "[1/9] Fail if not running as root"
+      fail:
+        msg: >
+          Not running as root (got '{{ whoami_result.stdout }}').
+          Check that MPR-SSH is set as Sudo Credentials in the Semaphore inventory.
+      when: whoami_result.stdout != 'root'
 
     # ─────────────────────────────────────────────
-    # BACKUP & PREPARE
+    # STEP 2: INSTALL PREREQUISITES (shell, not apt module)
     # ─────────────────────────────────────────────
 
-    - name: Create backup directory
-      file:
-        path: "{{ backup_dir }}"
-        state: directory
-        mode: '0755'
+    - name: "[2/9] Release any held apt/dpkg locks"
+      shell: |
+        # Kill processes holding apt locks
+        for lock in /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock /var/lib/apt/lists/lock; do
+          pid=$(lsof "${lock}" 2>/dev/null | awk 'NR>1{print $2}' | head -1)
+          [ -n "${pid}" ] && kill -9 "${pid}" 2>/dev/null || true
+        done
+        # Remove lock files
+        rm -f /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock /var/lib/apt/lists/lock
+        # Fix any interrupted dpkg
+        DEBIAN_FRONTEND=noninteractive dpkg --configure -a 2>/dev/null || true
+        echo "Locks cleared"
+      changed_when: false
 
-    - name: Create temp working directory
-      tempfile:
-        state: directory
-      register: work_dir
+    - name: "[2/9] Install curl and unzip via shell"
+      shell: |
+        # Check if already installed - skip apt entirely if both present
+        curl_ok=0
+        unzip_ok=0
+        command -v curl  >/dev/null 2>&1 && curl_ok=1
+        command -v unzip >/dev/null 2>&1 && unzip_ok=1
 
-    - name: Backup existing orchestrator installation
+        if [ "${curl_ok}" -eq 1 ] && [ "${unzip_ok}" -eq 1 ]; then
+          echo "curl and unzip already installed - skipping apt"
+          exit 0
+        fi
+
+        # Need to install - use apt-get with timeout and non-interactive
+        DEBIAN_FRONTEND=noninteractive apt-get install -y \
+          -o DPkg::Lock::Timeout=120 \
+          -o Dpkg::Options::="--force-confdef" \
+          -o Dpkg::Options::="--force-confold" \
+          curl unzip
+        echo "Packages installed"
+      register: pkg_result
+      changed_when: "'Packages installed' in pkg_result.stdout"
+
+    - name: "[2/9] Show package install result"
+      debug:
+        msg: "{{ pkg_result.stdout_lines }}"
+
+    # ─────────────────────────────────────────────
+    # STEP 3: BACKUP
+    # ─────────────────────────────────────────────
+
+    - name: "[3/9] Create backup directory"
+      shell: mkdir -p "{{ backup_dir }}"
+      changed_when: false
+
+    - name: "[3/9] Backup existing orchestrator"
       shell: |
         if [ -d "{{ install_dir }}" ]; then
           BACKUP="{{ backup_dir }}/orchestrator_$(date +%Y%m%d_%H%M%S)"
           cp -r "{{ install_dir }}" "${BACKUP}"
-          ls -dt {{ backup_dir }}/orchestrator_* 2>/dev/null | tail -n +4 | xargs rm -rf || true
+          # Keep only 3 most recent backups
+          ls -dt {{ backup_dir }}/orchestrator_* 2>/dev/null | tail -n +4 | xargs rm -rf 2>/dev/null || true
           echo "Backed up to: ${BACKUP}"
         else
-          echo "No existing installation to backup"
+          echo "No existing installation - skipping backup"
         fi
       register: backup_result
       changed_when: "'Backed up' in backup_result.stdout"
 
-    - name: Show backup result
+    - name: "[3/9] Show backup result"
       debug:
         msg: "{{ backup_result.stdout }}"
 
     # ─────────────────────────────────────────────
-    # STOP OLD SERVICES
+    # STEP 4: STOP OLD SERVICES
     # ─────────────────────────────────────────────
 
-    - name: Stop and disable old services
+    - name: "[4/9] Stop and remove old services"
       shell: |
         for svc in "{{ service_name }}" "{{ gateway_service_name }}"; do
           if systemctl list-unit-files 2>/dev/null | grep -q "^${svc}\.service"; then
-            systemctl stop "${svc}" || true
-            systemctl disable "${svc}" || true
+            echo "Stopping ${svc}..."
+            systemctl stop "${svc}" 2>/dev/null || true
+            systemctl disable "${svc}" 2>/dev/null || true
           fi
         done
-        pkill -f "{{ service_name }}" || true
-        pkill -f "{{ gateway_service_name }}" || true
+        pkill -f "{{ service_name }}" 2>/dev/null || true
+        pkill -f "{{ gateway_service_name }}" 2>/dev/null || true
+        rm -rf "{{ install_dir }}" "{{ gateway_install_dir }}"
+        echo "Old services stopped and directories removed"
+      register: stop_result
       changed_when: true
 
-    - name: Remove old installation directories
-      file:
-        path: "{{ item }}"
-        state: absent
-      loop:
-        - "{{ install_dir }}"
-        - "{{ gateway_install_dir }}"
+    - name: "[4/9] Show stop result"
+      debug:
+        msg: "{{ stop_result.stdout_lines }}"
 
     # ─────────────────────────────────────────────
-    # DOWNLOAD & INSTALL ORCHESTRATOR
+    # STEP 5: CREATE TEMP DIR
     # ─────────────────────────────────────────────
 
-    - name: Fetch orchestrator release metadata from GitHub
-      uri:
-        url: "{{ repo_api_url }}"
-        return_content: yes
-        headers:
-          Accept: "application/vnd.github+json"
-        timeout: 30
-      register: orchestrator_release
+    - name: "[5/9] Create temp working directory"
+      shell: mktemp -d
+      register: work_dir_cmd
+      changed_when: false
+
+    - name: "[5/9] Set work_dir fact"
+      set_fact:
+        work_dir: "{{ work_dir_cmd.stdout | trim }}"
+
+    # ─────────────────────────────────────────────
+    # STEP 6: DOWNLOAD & INSTALL ORCHESTRATOR
+    # ─────────────────────────────────────────────
+
+    - name: "[6/9] Fetch orchestrator release info from GitHub"
+      shell: |
+        curl -fsSL \
+          -H "Accept: application/vnd.github+json" \
+          "{{ repo_api_url }}"
+      register: orch_release_raw
+      changed_when: false
       retries: 3
       delay: 5
 
-    - name: Extract orchestrator download URL and version
-      set_fact:
-        orchestrator_zip_url: >-
-          {{ orchestrator_release.json.assets
-             | selectattr('name', 'match', '.*Installationsmain.*\\.zip')
-             | map(attribute='browser_download_url')
-             | first }}
-        orchestrator_version: "{{ orchestrator_release.json.tag_name }}"
+    - name: "[6/9] Extract orchestrator zip URL and version"
+      shell: |
+        echo '{{ orch_release_raw.stdout | replace("'", "") }}' | \
+        python3 -c "
+        import sys, json
+        data = json.load(sys.stdin)
+        tag = data['tag_name']
+        url = next(
+          a['browser_download_url']
+          for a in data['assets']
+          if 'Installationsmain' in a['name'] and a['name'].endswith('.zip')
+        )
+        print(tag)
+        print(url)
+        "
+      register: orch_info
+      changed_when: false
 
-    - name: Show orchestrator version being deployed
+    - name: "[6/9] Set orchestrator facts"
+      set_fact:
+        orchestrator_version: "{{ orch_info.stdout_lines[0] }}"
+        orchestrator_zip_url: "{{ orch_info.stdout_lines[1] }}"
+
+    - name: "[6/9] Show orchestrator version"
       debug:
         msg: "Deploying orchestrator {{ orchestrator_version }}"
 
-    - name: Download orchestrator zip
-      get_url:
-        url: "{{ orchestrator_zip_url }}"
-        dest: "{{ work_dir.path }}/orchestrator.zip"
-        timeout: 120
-        mode: '0644'
-
-    - name: Unzip orchestrator bundle
-      unarchive:
-        src: "{{ work_dir.path }}/orchestrator.zip"
-        dest: "{{ work_dir.path }}"
-        remote_src: yes
-
-    - name: Verify Installationsmain directory exists
-      stat:
-        path: "{{ work_dir.path }}/Installationsmain"
-      register: bundle_stat
-
-    - name: Fail if bundle structure is wrong
-      fail:
-        msg: "Unzipped bundle is missing Installationsmain/ directory."
-      when: not bundle_stat.stat.exists
-
-    - name: Make installer executable
-      file:
-        path: "{{ work_dir.path }}/Installationsmain/DeviceManager_Install.sh"
-        mode: '0755'
-
-    - name: Run orchestrator installer
+    - name: "[6/9] Download orchestrator zip"
       shell: |
-        cd "{{ work_dir.path }}/Installationsmain"
-        ./DeviceManager_Install.sh
-      args:
-        executable: /bin/bash
-      register: install_output
+        curl -fL "{{ orchestrator_zip_url }}" -o "{{ work_dir }}/orchestrator.zip"
+        echo "Downloaded: $(du -sh {{ work_dir }}/orchestrator.zip | cut -f1)"
+      register: orch_download
       changed_when: true
 
-    - name: Show installer output
+    - name: "[6/9] Unzip orchestrator"
+      shell: |
+        unzip -q "{{ work_dir }}/orchestrator.zip" -d "{{ work_dir }}"
+        ls "{{ work_dir }}/Installationsmain/" | head -10
+      register: orch_unzip
+      changed_when: true
+
+    - name: "[6/9] Show unzipped contents"
       debug:
-        var: install_output.stdout_lines
+        msg: "{{ orch_unzip.stdout_lines }}"
 
-    - name: Enable orchestrator service
-      systemd:
-        name: "{{ service_name }}"
-        enabled: yes
-        daemon_reload: yes
-      ignore_errors: yes
+    - name: "[6/9] Run orchestrator installer"
+      shell: |
+        cd "{{ work_dir }}/Installationsmain"
+        chmod +x ./DeviceManager_Install.sh
+        ./DeviceManager_Install.sh
+      register: orch_install
+      changed_when: true
+
+    - name: "[6/9] Show orchestrator install output"
+      debug:
+        msg: "{{ orch_install.stdout_lines }}"
+
+    - name: "[6/9] Enable orchestrator service"
+      shell: |
+        systemctl daemon-reload
+        systemctl enable "{{ service_name }}" 2>/dev/null || true
+        echo "Service enabled"
+      changed_when: true
 
     # ─────────────────────────────────────────────
-    # DOWNLOAD & INSTALL GATEWAY DASHBOARD
+    # STEP 7: DOWNLOAD & INSTALL GATEWAY DASHBOARD
     # ─────────────────────────────────────────────
 
-    - name: Fetch gateway-dashboard release metadata from GitHub
-      uri:
-        url: "{{ gateway_repo_api_url }}"
-        return_content: yes
-        headers:
-          Accept: "application/vnd.github+json"
-        timeout: 30
-      register: gateway_release
+    - name: "[7/9] Fetch gateway-dashboard release info from GitHub"
+      shell: |
+        curl -fsSL \
+          -H "Accept: application/vnd.github+json" \
+          "{{ gateway_repo_api_url }}"
+      register: gw_release_raw
+      changed_when: false
       retries: 3
       delay: 5
 
-    - name: Extract gateway download URL and version
-      set_fact:
-        gateway_zip_url: >-
-          {{ gateway_release.json.assets
-             | selectattr('name', 'match', '.*linux_amd64\\.zip')
-             | map(attribute='browser_download_url')
-             | first }}
-        gateway_version: "{{ gateway_release.json.tag_name }}"
+    - name: "[7/9] Extract gateway zip URL and version"
+      shell: |
+        echo '{{ gw_release_raw.stdout | replace("'", "") }}' | \
+        python3 -c "
+        import sys, json
+        data = json.load(sys.stdin)
+        tag = data['tag_name']
+        url = next(
+          a['browser_download_url']
+          for a in data['assets']
+          if 'linux_amd64' in a['name'] and a['name'].endswith('.zip')
+        )
+        print(tag)
+        print(url)
+        "
+      register: gw_info
+      changed_when: false
 
-    - name: Show gateway version being deployed
+    - name: "[7/9] Set gateway facts"
+      set_fact:
+        gateway_version: "{{ gw_info.stdout_lines[0] }}"
+        gateway_zip_url: "{{ gw_info.stdout_lines[1] }}"
+
+    - name: "[7/9] Show gateway version"
       debug:
         msg: "Deploying gateway-dashboard {{ gateway_version }}"
 
-    - name: Create gateway work directory
-      file:
-        path: "{{ work_dir.path }}/gateway"
-        state: directory
-        mode: '0755'
+    - name: "[7/9] Download and install gateway-dashboard"
+      shell: |
+        set -e
+        mkdir -p "{{ work_dir }}/gateway"
 
-    - name: Download gateway-dashboard zip
-      get_url:
-        url: "{{ gateway_zip_url }}"
-        dest: "{{ work_dir.path }}/gateway/gateway.zip"
-        timeout: 120
-        mode: '0644'
+        # Download
+        curl -fL "{{ gateway_zip_url }}" -o "{{ work_dir }}/gateway/gateway.zip"
+        echo "Downloaded: $(du -sh {{ work_dir }}/gateway/gateway.zip | cut -f1)"
 
-    - name: Unzip gateway-dashboard bundle
-      unarchive:
-        src: "{{ work_dir.path }}/gateway/gateway.zip"
-        dest: "{{ work_dir.path }}/gateway"
-        remote_src: yes
+        # Unzip
+        unzip -q "{{ work_dir }}/gateway/gateway.zip" -d "{{ work_dir }}/gateway"
 
-    - name: Verify gateway binary exists
-      stat:
-        path: "{{ work_dir.path }}/gateway/gateway-dashboard"
-      register: gw_binary
+        # Verify binary exists
+        if [ ! -f "{{ work_dir }}/gateway/gateway-dashboard" ]; then
+          echo "ERROR: gateway-dashboard binary not found after unzip"
+          ls "{{ work_dir }}/gateway/"
+          exit 1
+        fi
 
-    - name: Fail if gateway binary missing
-      fail:
-        msg: "gateway-dashboard binary not found in downloaded bundle."
-      when: not gw_binary.stat.exists
+        # Create install dir
+        mkdir -p "{{ gateway_install_dir }}"
 
-    - name: Create gateway install directory
-      file:
-        path: "{{ gateway_install_dir }}"
-        state: directory
-        mode: '0755'
+        # Copy binary
+        cp "{{ work_dir }}/gateway/gateway-dashboard" "{{ gateway_install_dir }}/gateway-dashboard"
+        chmod +x "{{ gateway_install_dir }}/gateway-dashboard"
 
-    - name: Copy config.json.example to config.json
-      copy:
-        src: "{{ work_dir.path }}/gateway/config.json.example"
-        dest: "{{ work_dir.path }}/gateway/config.json"
-        remote_src: yes
+        # Copy config (use example as base if config.json doesn't already exist)
+        if [ -f "{{ work_dir }}/gateway/config.json.example" ] && [ ! -f "{{ gateway_install_dir }}/config.json" ]; then
+          cp "{{ work_dir }}/gateway/config.json.example" "{{ gateway_install_dir }}/config.json"
+        fi
 
-    - name: Install gateway binary
-      copy:
-        src: "{{ work_dir.path }}/gateway/gateway-dashboard"
-        dest: "{{ gateway_install_dir }}/gateway-dashboard"
-        remote_src: yes
-        mode: '0755'
+        echo "Gateway installed to {{ gateway_install_dir }}"
+      register: gw_install
+      changed_when: true
 
-    - name: Install gateway config
-      copy:
-        src: "{{ work_dir.path }}/gateway/config.json"
-        dest: "{{ gateway_install_dir }}/config.json"
-        remote_src: yes
-        mode: '0644'
+    - name: "[7/9] Show gateway install output"
+      debug:
+        msg: "{{ gw_install.stdout_lines }}"
 
-    - name: Create gateway-dashboard systemd service
-      copy:
-        dest: "{{ gateway_service_file }}"
-        mode: '0644'
-        content: |
-          [Unit]
-          Description=Gateway Dashboard Service
-          After=network.target
+    - name: "[7/9] Create gateway-dashboard systemd service file"
+      shell: |
+        cat > "{{ gateway_service_file }}" << 'SVCEOF'
+        [Unit]
+        Description=Gateway Dashboard Service
+        After=network.target
 
-          [Service]
-          Type=simple
-          User=root
-          WorkingDirectory={{ gateway_install_dir }}
-          ExecStart={{ gateway_install_dir }}/gateway-dashboard
-          Restart=always
-          RestartSec=5
-          StandardOutput=journal
-          StandardError=journal
-          SyslogIdentifier={{ gateway_service_name }}
+        [Service]
+        Type=simple
+        User=root
+        WorkingDirectory={{ gateway_install_dir }}
+        ExecStart={{ gateway_install_dir }}/gateway-dashboard
+        Restart=always
+        RestartSec=5
+        StandardOutput=journal
+        StandardError=journal
+        SyslogIdentifier={{ gateway_service_name }}
 
-          [Install]
-          WantedBy=multi-user.target
+        [Install]
+        WantedBy=multi-user.target
+        SVCEOF
+        echo "Service file written"
+      changed_when: true
 
     # ─────────────────────────────────────────────
-    # START SERVICES
+    # STEP 8: START SERVICES
     # ─────────────────────────────────────────────
 
-    - name: Reload systemd daemon
-      systemd:
-        daemon_reload: yes
+    - name: "[8/9] Reload systemd and start all services"
+      shell: |
+        systemctl daemon-reload
 
-    - name: Enable and start orchestrator
-      systemd:
-        name: "{{ service_name }}"
-        state: started
-        enabled: yes
+        # Start orchestrator
+        systemctl enable "{{ service_name }}" 2>/dev/null || true
+        systemctl start "{{ service_name }}"
+        sleep 2
 
-    - name: Enable and start gateway-dashboard
-      systemd:
-        name: "{{ gateway_service_name }}"
-        state: started
-        enabled: yes
+        # Start gateway
+        systemctl enable "{{ gateway_service_name }}"
+        systemctl start "{{ gateway_service_name }}"
+        sleep 2
+
+        echo "Services started"
+      register: start_result
+      changed_when: true
+
+    - name: "[8/9] Show start result"
+      debug:
+        msg: "{{ start_result.stdout_lines }}"
 
     # ─────────────────────────────────────────────
-    # CLEANUP & VERIFY
+    # STEP 9: CLEANUP & VERIFY
     # ─────────────────────────────────────────────
 
-    - name: Remove temp working directory
-      file:
-        path: "{{ work_dir.path }}"
-        state: absent
+    - name: "[9/9] Cleanup temp directory"
+      shell: rm -rf "{{ work_dir }}"
+      changed_when: false
 
-    - name: Check final service status
+    - name: "[9/9] Check final service status"
       shell: |
         orch=$(systemctl is-active {{ service_name }} 2>/dev/null || echo inactive)
         gw=$(systemctl is-active {{ gateway_service_name }} 2>/dev/null || echo inactive)
@@ -317,12 +385,12 @@
       register: final_status
       changed_when: false
 
-    - name: Parse service states
+    - name: "[9/9] Parse service states"
       set_fact:
         orch_state: "{{ final_status.stdout | regex_search('orchestrator=(.+)', '\\1') | first | default('unknown') }}"
         gw_state: "{{ final_status.stdout | regex_search('gateway=(.+)', '\\1') | first | default('unknown') }}"
 
-    - name: Deployment summary
+    - name: "[9/9] Deployment summary"
       debug:
         msg: |
           ════════════════════════════════════════════════════
@@ -331,15 +399,19 @@
            Host:               {{ inventory_hostname }}
            Orchestrator:       {{ orchestrator_version }} → {{ orch_state | upper }}
            Gateway Dashboard:  {{ gateway_version }} → {{ gw_state | upper }}
-           Backups:            {{ backup_dir }}
+           Backups stored in:  {{ backup_dir }}
           ════════════════════════════════════════════════════
 
-    - name: Fail if orchestrator not running
+    - name: "[9/9] Fail if orchestrator not running"
       fail:
-        msg: "go-ble-orchestrator is {{ orch_state }}. Run: sudo journalctl -u {{ service_name }} -n 50"
+        msg: >
+          go-ble-orchestrator is {{ orch_state }}.
+          Check logs with: sudo journalctl -u {{ service_name }} -n 50
       when: orch_state != 'active'
 
-    - name: Fail if gateway not running
+    - name: "[9/9] Fail if gateway not running"
       fail:
-        msg: "gateway-dashboard is {{ gw_state }}. Run: sudo journalctl -u {{ gateway_service_name }} -n 50"
+        msg: >
+          gateway-dashboard is {{ gw_state }}.
+          Check logs with: sudo journalctl -u {{ gateway_service_name }} -n 50
       when: gw_state != 'active'
