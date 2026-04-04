@@ -1,0 +1,302 @@
+nohup: ignoring input
+SQLite @/home/varun/database.sqlite semaphore
+Tmp Path (projects home) /mnt/c/Users/LifesignsPD/Documents/Orchestrator/CassiaConnectionTest/Ansible/ansible/playbooks
+Semaphore 2.17.32-0252b9c-1774984615
+Interface 
+Port :3000
+Server is running
+time="2026-04-03T16:39:25+05:30" level=error msg="exit status 128"
+goroutine 242 [running]:
+runtime/debug.Stack()
+	/opt/hostedtoolcache/go/1.25.8/x64/src/runtime/debug/stack.go:26 +0x5e
+runtime/debug.PrintStack()
+	/opt/hostedtoolcache/go/1.25.8/x64/src/runtime/debug/stack.go:18 +0x13
+github.com/semaphoreui/semaphore/api/helpers.WriteError({0x2df3da0, 0xc0001f2b40}, {0x2dedd60, 0xc000297280})
+	/home/runner/work/semaphore/semaphore/api/helpers/write_response.go:60 +0x345
+github.com/semaphoreui/semaphore/api/projects.(*RepositoryController).GetRepositoryBranches(0xc0002a2da0, {0x2df3da0, 0xc0001f2b40}, 0xc00083d540?)
+	/home/runner/work/semaphore/semaphore/api/projects/repository.go:71 +0x3a5
+net/http.HandlerFunc.ServeHTTP(0xc00083cb40?, {0x2df3da0?, 0xc0001f2b40?}, 0x138ede0?)
+	/opt/hostedtoolcache/go/1.25.8/x64/src/net/http/server.go:2322 +0x29
+github.com/semaphoreui/semaphore/api/projects.RepositoryMiddleware.func1({0x2df3da0, 0xc0001f2b40}, 0xc00083cb40)
+	/home/runner/work/semaphore/semaphore/api/projects/repository.go:30 +0x2c2
+net/http.HandlerFunc.ServeHTTP(0xc000111408?, {0x2df3da0?, 0xc0001f2b40?}, 0xc00082f3b0?)
+	/opt/hostedtoolcache/go/1.25.8/x64/src/net/http/server.go:2322 +0x29
+github.com/semaphoreui/semaphore/api.Route.GetMustCanMiddleware.func5.1({0x2df3da0, 0xc0001f2b40}, 0xc00083cb40)
+	/home/runner/work/semaphore/semaphore/api/projects/project.go:98 +0x11e
+net/http.HandlerFunc.ServeHTTP(0xc00083ca00?, {0x2df3da0?, 0xc0001f2b40?}, 0x1370bc0?)
+	/opt/hostedtoolcache/go/1.25.8/x64/src/net/http/server.go:2322 +0x29
+github.com/semaphoreui/semaphore/api/projects.ProjectMiddleware.func1({0x2df3da0, 0xc0001f2b40}, 0xc00083c500)
+	/home/runner/work/semaphore/semaphore/api/projects/project.go:79 +0x797
+net/http.HandlerFunc.ServeHTTP(0x2df3da0?, {0x2df3da0?, 0xc0001f2b40?}, 0x1230a00?)
+	/opt/hostedtoolcache/go/1.25.8/x64/src/net/http/server.go:2322 +0x29
+github.com/semaphoreui/semaphore/api.authentication.func1({0x2df3da0, 0xc0001f2b40}, 0x1?)
+	/home/runner/work/semaphore/semaphore/api/auth.go:280 +0x50
+net/http.HandlerFunc.ServeHTTP(0x133c720?, {0x2df3da0?, 0xc0001f2b40?}, 0xc?)
+	/opt/hostedtoolcache/go/1.25.8/x64/src/net/http/server.go:2322 +0x29
+github.com/semaphoreui/semaphore/api.JSONMiddleware.func1({0x2df3da0, 0xc0001f2b40}, 0xc00083c3c0)
+	/home/runner/work/semaphore/semaphore/api/router.go:56 +0xf3
+net/http.HandlerFunc.ServeHTTP(0x121bac0?, {0x2df3da0?, 0xc0001f2b40?}, 0x1?)
+	/opt/hostedtoolcache/go/1.25.8/x64/src/net/http/server.go:2322 +0x29
+github.com/semaphoreui/semaphore/api.StoreMiddleware.func1.1()
+	/home/runner/work/semaphore/semaphore/api/router.go:47 +0x28
+github.com/semaphoreui/semaphore/db.StoreSession({0x2e12220, 0xc0001453b0}, {0xc00082cac0, 0xc}, 0xc0001117c0)
+	/home/runner/work/semaphore/semaphore/db/Store.go:760 +0x5f
+github.com/semaphoreui/semaphore/api.StoreMiddleware.func1({0x2df3da0, 0xc0001f2b40}, 0xc00083c3c0)
+	/home/runner/work/semaphore/semaphore/api/router.go:46 +0x114
+net/http.HandlerFunc.ServeHTTP(0xc00083c280?, {0x2df3da0?, 0xc0001f2b40?}, 0x12ae780?)
+	/opt/hostedtoolcache/go/1.25.8/x64/src/net/http/server.go:2322 +0x29
+github.com/semaphoreui/semaphore/cli/cmd.runService.func2.1({0x2df3da0, 0xc0001f2b40}, 0xc00082ec30?)
+	/home/runner/work/semaphore/semaphore/cli/cmd/root.go:209 +0x11b
+net/http.HandlerFunc.ServeHTTP(0xc000111801?, {0x2df3da0?, 0xc0001f2b40?}, 0x41d265?)
+	/opt/hostedtoolcache/go/1.25.8/x64/src/net/http/server.go:2322 +0x29
+github.com/semaphoreui/semaphore/api.Route.CORSMethodMiddleware.func2.1({0x2df3da0, 0xc0001f2b40}, 0xc00066de00)
+	/home/runner/work/semaphore/semaphore/vendor/github.com/gorilla/mux/middleware.go:51 +0x87
+net/http.HandlerFunc.ServeHTTP(0xc00066dcc0?, {0x2df3da0?, 0xc0001f2b40?}, 0x722549523f30?)
+	/opt/hostedtoolcache/go/1.25.8/x64/src/net/http/server.go:2322 +0x29
+github.com/gorilla/mux.(*Router).ServeHTTP(0xc0002ae180, {0x2df3da0, 0xc0001f2b40}, 0xc00066db80)
+	/home/runner/work/semaphore/semaphore/vendor/github.com/gorilla/mux/mux.go:212 +0x1e2
+github.com/semaphoreui/semaphore/cli/cmd.runService.ProxyHeaders.func4({0x2df3da0, 0xc0001f2b40}, 0xc00066db80)
+	/home/runner/work/semaphore/semaphore/vendor/github.com/gorilla/handlers/proxy_headers.go:59 +0x143
+net/http.HandlerFunc.ServeHTTP(0xc000551644?, {0x2df3da0?, 0xc0001f2b40?}, 0x4527c0?)
+	/opt/hostedtoolcache/go/1.25.8/x64/src/net/http/server.go:2322 +0x29
+github.com/semaphoreui/semaphore/cli/cmd.runService.cropTrailingSlashMiddleware.func6({0x2df3da0, 0xc0001f2b40}, 0xc00066db80)
+	/home/runner/work/semaphore/semaphore/cli/cmd/server.go:27 +0xb9
+net/http.HandlerFunc.ServeHTTP(0x479339?, {0x2df3da0?, 0xc0001f2b40?}, 0xc000111b68?)
+	/opt/hostedtoolcache/go/1.25.8/x64/src/net/http/server.go:2322 +0x29
+net/http.serverHandler.ServeHTTP({0xc000034080?}, {0x2df3da0?, 0xc0001f2b40?}, 0x6?)
+	/opt/hostedtoolcache/go/1.25.8/x64/src/net/http/server.go:3340 +0x8e
+net/http.(*conn).serve(0xc000156120, {0x2df61f0, 0xc0005745a0})
+	/opt/hostedtoolcache/go/1.25.8/x64/src/net/http/server.go:2109 +0x665
+created by net/http.(*Server).Serve in goroutine 1
+	/opt/hostedtoolcache/go/1.25.8/x64/src/net/http/server.go:3493 +0x485
+time="2026-04-03T16:59:46+05:30" level=info msg="Task added to queue" task_id=1 task_name=Orchestrator-test
+time="2026-04-03T16:59:46+05:30" level=info msg="Set resource locker" context=task_pool task_id=1 task_name=Orchestrator-test
+time="2026-04-03T16:59:46+05:30" level=info msg="Task started" context=task_pool task_id=1 task_name=Orchestrator-test
+time="2026-04-03T16:59:47+05:30" level=info msg="Task status updated" context=task_logger status=starting task_id=1
+time="2026-04-03T16:59:47+05:30" level=info msg="Task status updated" context=task_logger status=running task_id=1
+time="2026-04-03T17:00:02+05:30" level=warning msg="invalid ansible result host: localhost                  : ok=3    changed=0    unreachable=0    failed=1    skipped=17   rescued=0    ignored=1   " content=ansible_result_parser task_id=1
+time="2026-04-03T17:00:02+05:30" level=warning msg="Failed to run task" context=task_runner error="exit status 2" task_id=1 task_status=running
+time="2026-04-03T17:00:02+05:30" level=info msg="Task status updated" context=task_logger status=error task_id=1
+time="2026-04-03T17:00:02+05:30" level=info msg="Stopped running task Orchestrator-test" task_id=1
+time="2026-04-03T17:00:02+05:30" level=warning msg="invalid ansible result host: Failed to run task: exit status 2" content=ansible_result_parser task_id=1
+
+
+
+
+2026/04/04 09:16:24 http: superfluous response.WriteHeader call from github.com/semaphoreui/semaphore/api/helpers.WriteJSON (write_response.go:17)
+
+time="2026-04-04T09:16:56+05:30" level=error msg="exit status 128"
+goroutine 367 [running]:
+runtime/debug.Stack()
+	/opt/hostedtoolcache/go/1.25.8/x64/src/runtime/debug/stack.go:26 +0x5e
+runtime/debug.PrintStack()
+	/opt/hostedtoolcache/go/1.25.8/x64/src/runtime/debug/stack.go:18 +0x13
+github.com/semaphoreui/semaphore/api/helpers.WriteError({0x2df3da0, 0xc0006dee10}, {0x2dedd60, 0xc0000a9300})
+	/home/runner/work/semaphore/semaphore/api/helpers/write_response.go:60 +0x345
+github.com/semaphoreui/semaphore/api/projects.(*RepositoryController).GetRepositoryBranches(0xc0002a2da0, {0x2df3da0, 0xc0006dee10}, 0xc000d64280?)
+	/home/runner/work/semaphore/semaphore/api/projects/repository.go:71 +0x3a5
+net/http.HandlerFunc.ServeHTTP(0xc000d517c0?, {0x2df3da0?, 0xc0006dee10?}, 0x138ede0?)
+	/opt/hostedtoolcache/go/1.25.8/x64/src/net/http/server.go:2322 +0x29
+github.com/semaphoreui/semaphore/api/projects.RepositoryMiddleware.func1({0x2df3da0, 0xc0006dee10}, 0xc000d517c0)
+	/home/runner/work/semaphore/semaphore/api/projects/repository.go:30 +0x2c2
+net/http.HandlerFunc.ServeHTTP(0xc00091d408?, {0x2df3da0?, 0xc0006dee10?}, 0xc000d45680?)
+	/opt/hostedtoolcache/go/1.25.8/x64/src/net/http/server.go:2322 +0x29
+github.com/semaphoreui/semaphore/api.Route.GetMustCanMiddleware.func5.1({0x2df3da0, 0xc0006dee10}, 0xc000d517c0)
+	/home/runner/work/semaphore/semaphore/api/projects/project.go:98 +0x11e
+net/http.HandlerFunc.ServeHTTP(0xc000d51680?, {0x2df3da0?, 0xc0006dee10?}, 0x1370bc0?)
+	/opt/hostedtoolcache/go/1.25.8/x64/src/net/http/server.go:2322 +0x29
+github.com/semaphoreui/semaphore/api/projects.ProjectMiddleware.func1({0x2df3da0, 0xc0006dee10}, 0xc000d51180)
+	/home/runner/work/semaphore/semaphore/api/projects/project.go:79 +0x797
+net/http.HandlerFunc.ServeHTTP(0x2df3da0?, {0x2df3da0?, 0xc0006dee10?}, 0x1230a00?)
+	/opt/hostedtoolcache/go/1.25.8/x64/src/net/http/server.go:2322 +0x29
+github.com/semaphoreui/semaphore/api.authentication.func1({0x2df3da0, 0xc0006dee10}, 0x1?)
+	/home/runner/work/semaphore/semaphore/api/auth.go:280 +0x50
+net/http.HandlerFunc.ServeHTTP(0x133c720?, {0x2df3da0?, 0xc0006dee10?}, 0xc?)
+	/opt/hostedtoolcache/go/1.25.8/x64/src/net/http/server.go:2322 +0x29
+github.com/semaphoreui/semaphore/api.JSONMiddleware.func1({0x2df3da0, 0xc0006dee10}, 0xc000d51040)
+	/home/runner/work/semaphore/semaphore/api/router.go:56 +0xf3
+net/http.HandlerFunc.ServeHTTP(0x121bac0?, {0x2df3da0?, 0xc0006dee10?}, 0x0?)
+	/opt/hostedtoolcache/go/1.25.8/x64/src/net/http/server.go:2322 +0x29
+github.com/semaphoreui/semaphore/api.StoreMiddleware.func1.1()
+	/home/runner/work/semaphore/semaphore/api/router.go:47 +0x28
+github.com/semaphoreui/semaphore/db.StoreSession({0x2e12220, 0xc0001453b0}, {0xc000d54170, 0xc}, 0xc00091d7c0)
+	/home/runner/work/semaphore/semaphore/db/Store.go:760 +0x5f
+github.com/semaphoreui/semaphore/api.StoreMiddleware.func1({0x2df3da0, 0xc0006dee10}, 0xc000d51040)
+	/home/runner/work/semaphore/semaphore/api/router.go:46 +0x114
+net/http.HandlerFunc.ServeHTTP(0xc000d50f00?, {0x2df3da0?, 0xc0006dee10?}, 0x12ae780?)
+	/opt/hostedtoolcache/go/1.25.8/x64/src/net/http/server.go:2322 +0x29
+github.com/semaphoreui/semaphore/cli/cmd.runService.func2.1({0x2df3da0, 0xc0006dee10}, 0xc000d44f00?)
+	/home/runner/work/semaphore/semaphore/cli/cmd/root.go:209 +0x11b
+net/http.HandlerFunc.ServeHTTP(0xc00091d801?, {0x2df3da0?, 0xc0006dee10?}, 0x41d265?)
+	/opt/hostedtoolcache/go/1.25.8/x64/src/net/http/server.go:2322 +0x29
+github.com/semaphoreui/semaphore/api.Route.CORSMethodMiddleware.func2.1({0x2df3da0, 0xc0006dee10}, 0xc000d50b40)
+	/home/runner/work/semaphore/semaphore/vendor/github.com/gorilla/mux/middleware.go:51 +0x87
+net/http.HandlerFunc.ServeHTTP(0xc000d50a00?, {0x2df3da0?, 0xc0006dee10?}, 0x722549523108?)
+	/opt/hostedtoolcache/go/1.25.8/x64/src/net/http/server.go:2322 +0x29
+github.com/gorilla/mux.(*Router).ServeHTTP(0xc0002ae180, {0x2df3da0, 0xc0006dee10}, 0xc000d508c0)
+	/home/runner/work/semaphore/semaphore/vendor/github.com/gorilla/mux/mux.go:212 +0x1e2
+github.com/semaphoreui/semaphore/cli/cmd.runService.ProxyHeaders.func4({0x2df3da0, 0xc0006dee10}, 0xc000d508c0)
+	/home/runner/work/semaphore/semaphore/vendor/github.com/gorilla/handlers/proxy_headers.go:59 +0x143
+net/http.HandlerFunc.ServeHTTP(0xc00018b644?, {0x2df3da0?, 0xc0006dee10?}, 0x4527c0?)
+	/opt/hostedtoolcache/go/1.25.8/x64/src/net/http/server.go:2322 +0x29
+github.com/semaphoreui/semaphore/cli/cmd.runService.cropTrailingSlashMiddleware.func6({0x2df3da0, 0xc0006dee10}, 0xc000d508c0)
+	/home/runner/work/semaphore/semaphore/cli/cmd/server.go:27 +0xb9
+net/http.HandlerFunc.ServeHTTP(0x479339?, {0x2df3da0?, 0xc0006dee10?}, 0xc00091db68?)
+	/opt/hostedtoolcache/go/1.25.8/x64/src/net/http/server.go:2322 +0x29
+net/http.serverHandler.ServeHTTP({0xc0000b2ac0?}, {0x2df3da0?, 0xc0006dee10?}, 0x6?)
+	/opt/hostedtoolcache/go/1.25.8/x64/src/net/http/server.go:3340 +0x8e
+net/http.(*conn).serve(0xc00071b320, {0x2df61f0, 0xc0005745a0})
+	/opt/hostedtoolcache/go/1.25.8/x64/src/net/http/server.go:2109 +0x665
+created by net/http.(*Server).Serve in goroutine 1
+	/opt/hostedtoolcache/go/1.25.8/x64/src/net/http/server.go:3493 +0x485
+time="2026-04-04T09:17:41+05:30" level=info msg="Task added to queue" task_id=2 task_name="Orchestrator deploy"
+time="2026-04-04T09:17:41+05:30" level=info msg="Set resource locker" context=task_pool task_id=2 task_name="Orchestrator deploy"
+time="2026-04-04T09:17:41+05:30" level=info msg="Task started" context=task_pool task_id=2 task_name="Orchestrator deploy"
+time="2026-04-04T09:17:42+05:30" level=info msg="Task status updated" context=task_logger status=starting task_id=2
+time="2026-04-04T09:17:42+05:30" level=info msg="Task status updated" context=task_logger status=running task_id=2
+time="2026-04-04T09:17:46+05:30" level=warning msg="Failed to run task" context=task_runner error="exit status 1" task_id=2 task_status=running
+time="2026-04-04T09:17:46+05:30" level=info msg="Task status updated" context=task_logger status=error task_id=2
+time="2026-04-04T09:17:46+05:30" level=info msg="Stopped running task Orchestrator deploy" task_id=2
+time="2026-04-04T09:18:23+05:30" level=error msg="exit status 128"
+goroutine 359 [running]:
+runtime/debug.Stack()
+	/opt/hostedtoolcache/go/1.25.8/x64/src/runtime/debug/stack.go:26 +0x5e
+runtime/debug.PrintStack()
+	/opt/hostedtoolcache/go/1.25.8/x64/src/runtime/debug/stack.go:18 +0x13
+github.com/semaphoreui/semaphore/api/helpers.WriteError({0x2df3da0, 0xc00020b3b0}, {0x2dedd60, 0xc000435ae0})
+	/home/runner/work/semaphore/semaphore/api/helpers/write_response.go:60 +0x345
+github.com/semaphoreui/semaphore/api/projects.(*RepositoryController).GetRepositoryBranches(0xc0002a2da0, {0x2df3da0, 0xc00020b3b0}, 0xc0000ddcc0?)
+	/home/runner/work/semaphore/semaphore/api/projects/repository.go:71 +0x3a5
+net/http.HandlerFunc.ServeHTTP(0xc0000dcb40?, {0x2df3da0?, 0xc00020b3b0?}, 0x138ede0?)
+	/opt/hostedtoolcache/go/1.25.8/x64/src/net/http/server.go:2322 +0x29
+github.com/semaphoreui/semaphore/api/projects.RepositoryMiddleware.func1({0x2df3da0, 0xc00020b3b0}, 0xc0000dcb40)
+	/home/runner/work/semaphore/semaphore/api/projects/repository.go:30 +0x2c2
+net/http.HandlerFunc.ServeHTTP(0xc000111408?, {0x2df3da0?, 0xc00020b3b0?}, 0xc0009188a0?)
+	/opt/hostedtoolcache/go/1.25.8/x64/src/net/http/server.go:2322 +0x29
+github.com/semaphoreui/semaphore/api.Route.GetMustCanMiddleware.func5.1({0x2df3da0, 0xc00020b3b0}, 0xc0000dcb40)
+	/home/runner/work/semaphore/semaphore/api/projects/project.go:98 +0x11e
+net/http.HandlerFunc.ServeHTTP(0xc0000dca00?, {0x2df3da0?, 0xc00020b3b0?}, 0x1370bc0?)
+	/opt/hostedtoolcache/go/1.25.8/x64/src/net/http/server.go:2322 +0x29
+github.com/semaphoreui/semaphore/api/projects.ProjectMiddleware.func1({0x2df3da0, 0xc00020b3b0}, 0xc00077c000)
+	/home/runner/work/semaphore/semaphore/api/projects/project.go:79 +0x797
+net/http.HandlerFunc.ServeHTTP(0x2df3da0?, {0x2df3da0?, 0xc00020b3b0?}, 0x1230a00?)
+	/opt/hostedtoolcache/go/1.25.8/x64/src/net/http/server.go:2322 +0x29
+github.com/semaphoreui/semaphore/api.authentication.func1({0x2df3da0, 0xc00020b3b0}, 0x1?)
+	/home/runner/work/semaphore/semaphore/api/auth.go:280 +0x50
+net/http.HandlerFunc.ServeHTTP(0x133c720?, {0x2df3da0?, 0xc00020b3b0?}, 0xc?)
+	/opt/hostedtoolcache/go/1.25.8/x64/src/net/http/server.go:2322 +0x29
+github.com/semaphoreui/semaphore/api.JSONMiddleware.func1({0x2df3da0, 0xc00020b3b0}, 0xc000771680)
+	/home/runner/work/semaphore/semaphore/api/router.go:56 +0xf3
+net/http.HandlerFunc.ServeHTTP(0x121bac0?, {0x2df3da0?, 0xc00020b3b0?}, 0x3?)
+	/opt/hostedtoolcache/go/1.25.8/x64/src/net/http/server.go:2322 +0x29
+github.com/semaphoreui/semaphore/api.StoreMiddleware.func1.1()
+	/home/runner/work/semaphore/semaphore/api/router.go:47 +0x28
+github.com/semaphoreui/semaphore/db.StoreSession({0x2e12220, 0xc0001453b0}, {0xc000596480, 0xc}, 0xc0001117c0)
+	/home/runner/work/semaphore/semaphore/db/Store.go:760 +0x5f
+github.com/semaphoreui/semaphore/api.StoreMiddleware.func1({0x2df3da0, 0xc00020b3b0}, 0xc000771680)
+	/home/runner/work/semaphore/semaphore/api/router.go:46 +0x114
+net/http.HandlerFunc.ServeHTTP(0xc000771540?, {0x2df3da0?, 0xc00020b3b0?}, 0x12ae780?)
+	/opt/hostedtoolcache/go/1.25.8/x64/src/net/http/server.go:2322 +0x29
+github.com/semaphoreui/semaphore/cli/cmd.runService.func2.1({0x2df3da0, 0xc00020b3b0}, 0xc0003f9860?)
+	/home/runner/work/semaphore/semaphore/cli/cmd/root.go:209 +0x11b
+net/http.HandlerFunc.ServeHTTP(0xc000111801?, {0x2df3da0?, 0xc00020b3b0?}, 0x41d265?)
+	/opt/hostedtoolcache/go/1.25.8/x64/src/net/http/server.go:2322 +0x29
+github.com/semaphoreui/semaphore/api.Route.CORSMethodMiddleware.func2.1({0x2df3da0, 0xc00020b3b0}, 0xc000771180)
+	/home/runner/work/semaphore/semaphore/vendor/github.com/gorilla/mux/middleware.go:51 +0x87
+net/http.HandlerFunc.ServeHTTP(0xc000771040?, {0x2df3da0?, 0xc00020b3b0?}, 0xc000101918?)
+	/opt/hostedtoolcache/go/1.25.8/x64/src/net/http/server.go:2322 +0x29
+github.com/gorilla/mux.(*Router).ServeHTTP(0xc0002ae180, {0x2df3da0, 0xc00020b3b0}, 0xc000770f00)
+	/home/runner/work/semaphore/semaphore/vendor/github.com/gorilla/mux/mux.go:212 +0x1e2
+github.com/semaphoreui/semaphore/cli/cmd.runService.ProxyHeaders.func4({0x2df3da0, 0xc00020b3b0}, 0xc000770f00)
+	/home/runner/work/semaphore/semaphore/vendor/github.com/gorilla/handlers/proxy_headers.go:59 +0x143
+net/http.HandlerFunc.ServeHTTP(0xc000551e44?, {0x2df3da0?, 0xc00020b3b0?}, 0x4527c0?)
+	/opt/hostedtoolcache/go/1.25.8/x64/src/net/http/server.go:2322 +0x29
+github.com/semaphoreui/semaphore/cli/cmd.runService.cropTrailingSlashMiddleware.func6({0x2df3da0, 0xc00020b3b0}, 0xc000770f00)
+	/home/runner/work/semaphore/semaphore/cli/cmd/server.go:27 +0xb9
+net/http.HandlerFunc.ServeHTTP(0x479339?, {0x2df3da0?, 0xc00020b3b0?}, 0xc000111b68?)
+	/opt/hostedtoolcache/go/1.25.8/x64/src/net/http/server.go:2322 +0x29
+net/http.serverHandler.ServeHTTP({0xc000782000?}, {0x2df3da0?, 0xc00020b3b0?}, 0x6?)
+	/opt/hostedtoolcache/go/1.25.8/x64/src/net/http/server.go:3340 +0x8e
+net/http.(*conn).serve(0xc0005a61b0, {0x2df61f0, 0xc0005745a0})
+	/opt/hostedtoolcache/go/1.25.8/x64/src/net/http/server.go:2109 +0x665
+created by net/http.(*Server).Serve in goroutine 1
+	/opt/hostedtoolcache/go/1.25.8/x64/src/net/http/server.go:3493 +0x485
+time="2026-04-04T09:18:45+05:30" level=info msg="Task added to queue" task_id=3 task_name="Orchestrator deploy"
+time="2026-04-04T09:18:45+05:30" level=info msg="Set resource locker" context=task_pool task_id=3 task_name="Orchestrator deploy"
+time="2026-04-04T09:18:45+05:30" level=info msg="Task started" context=task_pool task_id=3 task_name="Orchestrator deploy"
+time="2026-04-04T09:18:46+05:30" level=info msg="Task status updated" context=task_logger status=starting task_id=3
+time="2026-04-04T09:18:46+05:30" level=info msg="Task status updated" context=task_logger status=running task_id=3
+time="2026-04-04T09:18:50+05:30" level=warning msg="Failed to run task" context=task_runner error="exit status 1" task_id=3 task_status=running
+time="2026-04-04T09:18:50+05:30" level=info msg="Task status updated" context=task_logger status=error task_id=3
+time="2026-04-04T09:18:50+05:30" level=info msg="Stopped running task Orchestrator deploy" task_id=3
+time="2026-04-04T09:19:56+05:30" level=error msg="exit status 128"
+goroutine 401 [running]:
+runtime/debug.Stack()
+	/opt/hostedtoolcache/go/1.25.8/x64/src/runtime/debug/stack.go:26 +0x5e
+runtime/debug.PrintStack()
+	/opt/hostedtoolcache/go/1.25.8/x64/src/runtime/debug/stack.go:18 +0x13
+github.com/semaphoreui/semaphore/api/helpers.WriteError({0x2df3da0, 0xc000908f00}, {0x2dedd60, 0xc0002979a0})
+	/home/runner/work/semaphore/semaphore/api/helpers/write_response.go:60 +0x345
+github.com/semaphoreui/semaphore/api/projects.(*RepositoryController).GetRepositoryBranches(0xc0002a2da0, {0x2df3da0, 0xc000908f00}, 0xc000a23680?)
+	/home/runner/work/semaphore/semaphore/api/projects/repository.go:71 +0x3a5
+net/http.HandlerFunc.ServeHTTP(0xc000a22a00?, {0x2df3da0?, 0xc000908f00?}, 0x138ede0?)
+	/opt/hostedtoolcache/go/1.25.8/x64/src/net/http/server.go:2322 +0x29
+github.com/semaphoreui/semaphore/api/projects.RepositoryMiddleware.func1({0x2df3da0, 0xc000908f00}, 0xc000a22a00)
+	/home/runner/work/semaphore/semaphore/api/projects/repository.go:30 +0x2c2
+net/http.HandlerFunc.ServeHTTP(0xc000829408?, {0x2df3da0?, 0xc000908f00?}, 0xc000a28630?)
+	/opt/hostedtoolcache/go/1.25.8/x64/src/net/http/server.go:2322 +0x29
+github.com/semaphoreui/semaphore/api.Route.GetMustCanMiddleware.func5.1({0x2df3da0, 0xc000908f00}, 0xc000a22a00)
+	/home/runner/work/semaphore/semaphore/api/projects/project.go:98 +0x11e
+net/http.HandlerFunc.ServeHTTP(0xc000a228c0?, {0x2df3da0?, 0xc000908f00?}, 0x1370bc0?)
+	/opt/hostedtoolcache/go/1.25.8/x64/src/net/http/server.go:2322 +0x29
+github.com/semaphoreui/semaphore/api/projects.ProjectMiddleware.func1({0x2df3da0, 0xc000908f00}, 0xc0007e2dc0)
+	/home/runner/work/semaphore/semaphore/api/projects/project.go:79 +0x797
+net/http.HandlerFunc.ServeHTTP(0x2df3da0?, {0x2df3da0?, 0xc000908f00?}, 0x1230a00?)
+	/opt/hostedtoolcache/go/1.25.8/x64/src/net/http/server.go:2322 +0x29
+github.com/semaphoreui/semaphore/api.authentication.func1({0x2df3da0, 0xc000908f00}, 0x1?)
+	/home/runner/work/semaphore/semaphore/api/auth.go:280 +0x50
+net/http.HandlerFunc.ServeHTTP(0x133c720?, {0x2df3da0?, 0xc000908f00?}, 0xc?)
+	/opt/hostedtoolcache/go/1.25.8/x64/src/net/http/server.go:2322 +0x29
+github.com/semaphoreui/semaphore/api.JSONMiddleware.func1({0x2df3da0, 0xc000908f00}, 0xc000a22000)
+	/home/runner/work/semaphore/semaphore/api/router.go:56 +0xf3
+net/http.HandlerFunc.ServeHTTP(0x121bac0?, {0x2df3da0?, 0xc000908f00?}, 0x2?)
+	/opt/hostedtoolcache/go/1.25.8/x64/src/net/http/server.go:2322 +0x29
+github.com/semaphoreui/semaphore/api.StoreMiddleware.func1.1()
+	/home/runner/work/semaphore/semaphore/api/router.go:47 +0x28
+github.com/semaphoreui/semaphore/db.StoreSession({0x2e12220, 0xc0001453b0}, {0xc0009f1da0, 0xc}, 0xc0008297c0)
+	/home/runner/work/semaphore/semaphore/db/Store.go:760 +0x5f
+github.com/semaphoreui/semaphore/api.StoreMiddleware.func1({0x2df3da0, 0xc000908f00}, 0xc000a22000)
+	/home/runner/work/semaphore/semaphore/api/router.go:46 +0x114
+net/http.HandlerFunc.ServeHTTP(0xc000a17e00?, {0x2df3da0?, 0xc000908f00?}, 0x12ae780?)
+	/opt/hostedtoolcache/go/1.25.8/x64/src/net/http/server.go:2322 +0x29
+github.com/semaphoreui/semaphore/cli/cmd.runService.func2.1({0x2df3da0, 0xc000908f00}, 0xc0009f79e0?)
+	/home/runner/work/semaphore/semaphore/cli/cmd/root.go:209 +0x11b
+net/http.HandlerFunc.ServeHTTP(0xc000829801?, {0x2df3da0?, 0xc000908f00?}, 0x41d265?)
+	/opt/hostedtoolcache/go/1.25.8/x64/src/net/http/server.go:2322 +0x29
+github.com/semaphoreui/semaphore/api.Route.CORSMethodMiddleware.func2.1({0x2df3da0, 0xc000908f00}, 0xc000a17a40)
+	/home/runner/work/semaphore/semaphore/vendor/github.com/gorilla/mux/middleware.go:51 +0x87
+net/http.HandlerFunc.ServeHTTP(0xc000a17900?, {0x2df3da0?, 0xc000908f00?}, 0x7225495243e8?)
+	/opt/hostedtoolcache/go/1.25.8/x64/src/net/http/server.go:2322 +0x29
+github.com/gorilla/mux.(*Router).ServeHTTP(0xc0002ae180, {0x2df3da0, 0xc000908f00}, 0xc000a177c0)
+	/home/runner/work/semaphore/semaphore/vendor/github.com/gorilla/mux/mux.go:212 +0x1e2
+github.com/semaphoreui/semaphore/cli/cmd.runService.ProxyHeaders.func4({0x2df3da0, 0xc000908f00}, 0xc000a177c0)
+	/home/runner/work/semaphore/semaphore/vendor/github.com/gorilla/handlers/proxy_headers.go:59 +0x143
+net/http.HandlerFunc.ServeHTTP(0xc000551bc4?, {0x2df3da0?, 0xc000908f00?}, 0x4527c0?)
+	/opt/hostedtoolcache/go/1.25.8/x64/src/net/http/server.go:2322 +0x29
+github.com/semaphoreui/semaphore/cli/cmd.runService.cropTrailingSlashMiddleware.func6({0x2df3da0, 0xc000908f00}, 0xc000a177c0)
+	/home/runner/work/semaphore/semaphore/cli/cmd/server.go:27 +0xb9
+net/http.HandlerFunc.ServeHTTP(0x479339?, {0x2df3da0?, 0xc000908f00?}, 0xc000829b68?)
+	/opt/hostedtoolcache/go/1.25.8/x64/src/net/http/server.go:2322 +0x29
+net/http.serverHandler.ServeHTTP({0xc0000b2a00?}, {0x2df3da0?, 0xc000908f00?}, 0x6?)
+	/opt/hostedtoolcache/go/1.25.8/x64/src/net/http/server.go:3340 +0x8e
+net/http.(*conn).serve(0xc000671c20, {0x2df61f0, 0xc0005745a0})
+	/opt/hostedtoolcache/go/1.25.8/x64/src/net/http/server.go:2109 +0x665
+created by net/http.(*Server).Serve in goroutine 1
+	/opt/hostedtoolcache/go/1.25.8/x64/src/net/http/server.go:3493 +0x485
+time="2026-04-04T09:42:21+05:30" level=info msg="Task added to queue" task_id=4 task_name=deploy
+time="2026-04-04T09:42:21+05:30" level=info msg="Set resource locker" context=task_pool task_id=4 task_name=deploy
+time="2026-04-04T09:42:21+05:30" level=info msg="Task started" context=task_pool task_id=4 task_name=deploy
+time="2026-04-04T09:42:22+05:30" level=info msg="Task status updated" context=task_logger status=starting task_id=4
+time="2026-04-04T09:42:22+05:30" level=info msg="Task status updated" context=task_logger status=running task_id=4
+time="2026-04-04T09:42:30+05:30" level=info msg="Task status updated" context=task_logger status=success task_id=4
+time="2026-04-04T09:42:30+05:30" level=info msg="Stopped running task deploy" task_id=4

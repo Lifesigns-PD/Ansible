@@ -1,0 +1,11 @@
+---
+- name: Discover Tailscale Devices
+  hosts: localhost
+  tasks:
+    - name: Fetch Tailscale Status
+      command: tailscale status
+      register: ts_status
+
+    - name: Display Found Devices
+      debug:
+        msg: "{{ ts_status.stdout_lines }}"
