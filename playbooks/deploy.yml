@@ -14,6 +14,13 @@
         dest: "/tmp/setup.sh"
         mode: '0755'
 
+    - name: Patch setup.sh (Hotfix Regex and Pipefail)
+      # setup.sh crashes due to `set -e` and a failing grep (looking for a hyphen).
+      # This fixes the regex and safety rules directly in the downloaded script before it runs.
+      shell: |
+        sed -i 's/Installationsmain-\[\^"\]+/Installationsmain\[\^"\]*/g' /tmp/setup.sh
+        sed -i 's/set -euo pipefail/set -uo pipefail/g' /tmp/setup.sh
+
     - name: Execute setup.sh with automated responses (Bash inside YML)
       shell: |
         # Pipe "yes" to remove old dirs, "yes" to update gateway, "no" to skip nano editor
