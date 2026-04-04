@@ -394,3 +394,14 @@ time="2026-04-04T11:59:41+05:30" level=info msg="Set resource locker" context=ta
 time="2026-04-04T11:59:41+05:30" level=info msg="Task started" context=task_pool task_id=15 task_name=deploy
 time="2026-04-04T11:59:42+05:30" level=info msg="Task status updated" context=task_logger status=starting task_id=15
 time="2026-04-04T11:59:42+05:30" level=info msg="Task status updated" context=task_logger status=running task_id=15
+time="2026-04-04T12:07:44+05:30" level=info msg="Task status updated" context=task_logger status=stopping task_id=15
+time="2026-04-04T12:07:44+05:30" level=info msg="Task status updated" context=task_logger status=stopped task_id=15
+time="2026-04-04T12:07:44+05:30" level=info msg="Stopped running task deploy" task_id=15
+time="2026-04-04T12:07:48+05:30" level=info msg="Task added to queue" task_id=16 task_name=deploy
+time="2026-04-04T12:07:48+05:30" level=info msg="Set resource locker" context=task_pool task_id=16 task_name=deploy
+time="2026-04-04T12:07:48+05:30" level=info msg="Task started" context=task_pool task_id=16 task_name=deploy
+time="2026-04-04T12:07:49+05:30" level=info msg="Task status updated" context=task_logger status=starting task_id=16
+time="2026-04-04T12:07:49+05:30" level=info msg="Task status updated" context=task_logger status=running task_id=16
+time="2026-04-04T12:08:15+05:30" level=info msg="Task status updated" context=task_logger status=stopping task_id=16
+time="2026-04-04T12:08:15+05:30" level=info msg="Task status updated" context=task_logger status=stopped task_id=16
+time="2026-04-04T12:08:15+05:30" level=info msg="Stopped running task deploy" task_id=16
