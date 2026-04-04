@@ -1,56 +1,278 @@
 ---
 # deploy.yml
-# Wrapper playbook: Downloads and executes your Bash script directly.
+# Fully automated native deployment. No external setup.sh required.
+# Completely bypasses interactive prompts for automated CI/CD.
 
-- name: Deploy BLE Orchestrator via Bash Setup Script
+- name: Deploy BLE Orchestrator + Gateway Dashboard Natively
   hosts: all
   become: yes
-  gather_facts: no
+  gather_facts: yes
+
+  vars:
+    service_name: "go-ble-orchestrator"
+    install_dir: "/opt/go-ble-orchestrator"
+    gateway_service_name: "gateway-dashboard"
+    gateway_install_dir: "/opt/gateway-dashboard"
+    gateway_service_file: "/etc/systemd/system/gateway-dashboard.service"
+    orchestrator_service_file: "/etc/systemd/system/go-ble-orchestrator.service"
+    backup_dir: "/opt/backups"
+    repo_api_url: "https://api.github.com/repos/Lifesigns-PD/orchestrator-releases/releases/latest"
+    gateway_repo_api_url: "https://api.github.com/repos/PD-dev-2025/gateway-dashboard-release/releases/latest"
 
   tasks:
-    - name: Download setup.sh from GitHub
-      get_url:
-        url: "https://github.com/Lifesigns-PD/orchestrator-releases/releases/download/setup/setup.sh"
-        dest: "/tmp/setup.sh"
-        mode: '0755'
-      # Force download even in dry run
-      check_mode: no
 
-    - name: Patch setup.sh (Hotfix Regex, Pipefail, and Interactive Prompts)
-      # This fixes the regex, safety rules, and automatically answers the prompts 
-      # so the script never hangs waiting for user input.
+    # ─────────────────────────────────────────────
+    # PREFLIGHT CHECKS
+    # ─────────────────────────────────────────────
+    - name: Ensure required packages (curl, unzip, zip, sudo) are installed
+      apt:
+        name:
+          - curl
+          - unzip
+          - zip
+          - sudo
+        state: present
+        update_cache: yes
+
+    - name: Assert OS is Ubuntu 22.04+
+      assert:
+        that:
+          - ansible_distribution == "Ubuntu"
+          - ansible_distribution_major_version | int >= 22
+        fail_msg: "Unsupported OS. Requires Ubuntu 22.04 or newer."
+        success_msg: "OS Check Passed: {{ ansible_distribution }} {{ ansible_distribution_version }}"
+
+    # ─────────────────────────────────────────────
+    # CREATE BACKUP + TEMP DIRS
+    # ─────────────────────────────────────────────
+    - name: Create backup directory
+      shell: sudo mkdir -p "{{ backup_dir }}"
+
+    - name: Create temp working directory
+      shell: mktemp -d
+      register: work_dir_result
+
+    - name: Set work_dir fact
+      set_fact:
+        work_dir: "{{ work_dir_result.stdout | trim }}"
+
+    # ─────────────────────────────────────────────
+    # BACKUP, STOP + REMOVE OLD ORCHESTRATOR
+    # ─────────────────────────────────────────────
+    - name: Backup existing orchestrator installation if present
       shell: |
-        # 1. Fix the regex and pipefail crashing issues
-        sed -i 's/Installationsmain-\[\^"\]+/Installationsmain\[\^"\]*/g' /tmp/setup.sh
-        sed -i 's/set -euo pipefail/set -uo pipefail/g' /tmp/setup.sh
-        
-        # 2. Bypass interactive prompts by hardcoding the variables
-        # Auto-confirm directory removals
-        sed -i 's/read -r -p "${prompt_message}" response/response="yes"/g' /tmp/setup.sh
-        # Auto-confirm gateway update
-        sed -i 's/read -r -p "Additionally you need to update the gateway-dashboard version. Type yes to continue: " update_gateway_dashboard/update_gateway_dashboard="yes"/g' /tmp/setup.sh
-        # Auto-decline the nano config editor
-        sed -i 's/read -r -p "Do you want to edit gateway-dashboard config.json now? Type yes to open sudo nano: " edit_gateway_config/edit_gateway_config="no"/g' /tmp/setup.sh
-      # FORCE this task to run to prevent the script from keeping interactive prompts
-      check_mode: no
+        if [ -d "{{ install_dir }}" ]; then
+          BACKUP_PATH="{{ backup_dir }}/go-ble-orchestrator_backup_$(date +%Y%m%d_%H%M%S)"
+          sudo cp -r "{{ install_dir }}" "${BACKUP_PATH}"
+          ls -dt {{ backup_dir }}/go-ble-orchestrator_backup_* 2>/dev/null | tail -n +2 | xargs sudo rm -rf || true
+          echo "Backed up to: ${BACKUP_PATH}"
+        else
+          echo "No existing installation to backup"
+        fi
+      register: orchestrator_backup
 
-    - name: Execute setup.sh in Debug Mode
-      # Using bash -x prints every command executed to the log for easy debugging.
-      # We also pipe the answers as a secondary failsafe just in case.
-      shell: printf "yes\nyes\nno\n" | bash -x /tmp/setup.sh
-      register: bash_output
-      check_mode: no
+    - name: Stop and disable go-ble-orchestrator service
+      shell: |
+        if sudo systemctl list-unit-files 2>/dev/null | grep -q "^{{ service_name }}\.service"; then
+          sudo systemctl stop {{ service_name }} || true
+          sudo systemctl disable {{ service_name }} || true
+        fi
 
-    - name: Show setup.sh output
+    - name: Kill any remaining orchestrator processes
+      shell: sudo pkill -f "{{ service_name }}" || true
+      ignore_errors: yes
+
+    - name: Remove old orchestrator directory safely
+      shell: sudo rm -rf "{{ install_dir }}"
+
+    # ─────────────────────────────────────────────
+    # DOWNLOAD + INSTALL NEW ORCHESTRATOR
+    # ─────────────────────────────────────────────
+    - name: Fetch latest orchestrator release metadata
+      shell: curl -fsSL "{{ repo_api_url }}"
+      register: release_json
+
+    - name: Extract orchestrator zip URL
+      shell: |
+        echo '{{ release_json.stdout }}' | grep -oP 'https://[^"]*Installationsmain[^"]*\.zip' | head -n 1
+      register: zip_url_result
+
+    - name: Fail if orchestrator zip URL not found
+      fail:
+        msg: "Could not find Installationsmain zip in latest release. Might be rate-limited by GitHub."
+      when: zip_url_result.stdout | trim == ''
+
+    - name: Download orchestrator zip
+      shell: curl -fL "{{ zip_url_result.stdout | trim }}" -o "{{ work_dir }}/Installationsmain.zip"
+
+    - name: Unzip orchestrator bundle
+      shell: unzip -q "{{ work_dir }}/Installationsmain.zip" -d "{{ work_dir }}"
+
+    - name: Make installation scripts and metrics executable
+      shell: |
+        cd "{{ work_dir }}/Installationsmain"
+        chmod +x DeviceManager_Install.sh
+        chmod +x DeviceManagerUninstall.sh
+        chmod +x ecg_metrics
+
+    - name: Run DeviceManager_Install.sh automatically
+      shell: |
+        cd "{{ work_dir }}/Installationsmain"
+        yes | sudo ./DeviceManager_Install.sh
+      register: installer_output
+
+    - name: Show installer output
       debug:
-        var: bash_output.stdout_lines
+        var: installer_output.stdout_lines
+
+    - name: Copy ecg_metrics to installation directory
+      shell: sudo cp "{{ work_dir }}/Installationsmain/ecg_metrics" "{{ install_dir }}/"
+
+    - name: Enable go-ble-orchestrator service
+      shell: sudo systemctl enable "{{ service_name }}" || true
 
     - name: Verify go-ble-orchestrator service logs
       shell: journalctl -u go-ble-orchestrator.service -n 20 --no-pager
       register: service_logs
       ignore_errors: yes
-      check_mode: no
 
     - name: Show service logs
       debug:
         var: service_logs.stdout_lines
+
+    # ─────────────────────────────────────────────
+    # BACKUP, STOP + REMOVE OLD GATEWAY
+    # ─────────────────────────────────────────────
+    - name: Backup existing gateway-dashboard installation if present
+      shell: |
+        if [ -d "{{ gateway_install_dir }}" ]; then
+          BACKUP_PATH="{{ backup_dir }}/gateway-dashboard_backup_$(date +%Y%m%d_%H%M%S)"
+          sudo cp -r "{{ gateway_install_dir }}" "${BACKUP_PATH}"
+          ls -dt {{ backup_dir }}/gateway-dashboard_backup_* 2>/dev/null | tail -n +2 | xargs sudo rm -rf || true
+        fi
+
+    - name: Stop and disable gateway-dashboard service
+      shell: |
+        if sudo systemctl list-unit-files 2>/dev/null | grep -q "^{{ gateway_service_name }}\.service"; then
+          sudo systemctl stop {{ gateway_service_name }} || true
+          sudo systemctl disable {{ gateway_service_name }} || true
+        fi
+
+    - name: Kill any remaining gateway processes
+      shell: sudo pkill -f "{{ gateway_service_name }}" || true
+      ignore_errors: yes
+
+    - name: Remove old gateway directory safely
+      shell: sudo rm -rf "{{ gateway_install_dir }}"
+
+    # ─────────────────────────────────────────────
+    # DOWNLOAD + INSTALL NEW GATEWAY DASHBOARD
+    # ─────────────────────────────────────────────
+    - name: Fetch latest gateway-dashboard release metadata
+      shell: curl -fsSL "{{ gateway_repo_api_url }}"
+      register: gateway_release_json
+
+    - name: Extract gateway zip URL
+      shell: |
+        echo '{{ gateway_release_json.stdout }}' | grep -oP 'https://[^"]*linux_amd64\.zip' | head -n 1
+      register: gateway_zip_url_result
+
+    - name: Fail if gateway zip URL not found
+      fail:
+        msg: "Could not find gateway-dashboard linux_amd64 zip in latest release."
+      when: gateway_zip_url_result.stdout | trim == ''
+
+    - name: Create gateway work directory
+      shell: mkdir -p "{{ work_dir }}/gateway-dashboard"
+
+    - name: Download gateway-dashboard zip
+      shell: curl -fL "{{ gateway_zip_url_result.stdout | trim }}" -o "{{ work_dir }}/gateway-dashboard/gateway-dashboard_linux_amd64.zip"
+
+    - name: Unzip gateway-dashboard bundle
+      shell: unzip -q "{{ work_dir }}/gateway-dashboard/gateway-dashboard_linux_amd64.zip" -d "{{ work_dir }}/gateway-dashboard"
+
+    - name: Create /opt/gateway-dashboard directory
+      shell: sudo mkdir -p "{{ gateway_install_dir }}"
+
+    - name: Install gateway-dashboard binary and config
+      shell: |
+        # Copy example to standard config (no manual editing prompt)
+        cp "{{ work_dir }}/gateway-dashboard/config.json.example" "{{ work_dir }}/gateway-dashboard/config.json"
+        
+        # Install to target directory
+        sudo cp "{{ work_dir }}/gateway-dashboard/gateway-dashboard" "{{ gateway_install_dir }}/"
+        sudo cp "{{ work_dir }}/gateway-dashboard/config.json" "{{ gateway_install_dir }}/"
+        
+        if [ -f "{{ work_dir }}/gateway-dashboard/README.md" ]; then
+          sudo cp "{{ work_dir }}/gateway-dashboard/README.md" "{{ gateway_install_dir }}/"
+        fi
+        
+        sudo chmod +x "{{ gateway_install_dir }}/gateway-dashboard"
+
+    - name: Write gateway-dashboard systemd service file
+      shell: |
+        sudo tee "{{ gateway_service_file }}" >/dev/null <<SVCEOF
+        [Unit]
+        Description=Gateway Dashboard Service
+        After=network.target
+
+        [Service]
+        Type=simple
+        User=root
+        WorkingDirectory={{ gateway_install_dir }}
+        ExecStart={{ gateway_install_dir }}/gateway-dashboard
+        Restart=always
+        RestartSec=5
+        StandardOutput=journal
+        StandardError=journal
+        SyslogIdentifier={{ gateway_service_name }}
+
+        [Install]
+        WantedBy=multi-user.target
+        SVCEOF
+
+    - name: Reload systemd daemon
+      shell: sudo systemctl daemon-reload
+
+    - name: Enable and Start gateway-dashboard service
+      shell: |
+        sudo systemctl enable "{{ gateway_service_name }}"
+        sudo systemctl start "{{ gateway_service_name }}"
+
+    # ─────────────────────────────────────────────
+    # CLEANUP + FINAL STATUS
+    # ─────────────────────────────────────────────
+    - name: Clean up temp working directory
+      shell: rm -rf "{{ work_dir }}"
+      ignore_errors: yes
+
+    - name: Check go-ble-orchestrator final status
+      shell: systemctl is-active "{{ service_name }}" 2>/dev/null || echo "inactive"
+      register: final_orchestrator_status
+      ignore_errors: yes
+
+    - name: Check gateway-dashboard final status
+      shell: systemctl is-active "{{ gateway_service_name }}" 2>/dev/null || echo "inactive"
+      register: final_gateway_status
+      ignore_errors: yes
+
+    - name: Show final deployment status
+      debug:
+        msg: |
+          ════════════════════════════════════════════════
+           DEPLOYMENT COMPLETE
+          ════════════════════════════════════════════════
+           go-ble-orchestrator : {{ final_orchestrator_status.stdout | default('unknown') }}
+           gateway-dashboard   : {{ final_gateway_status.stdout | default('unknown') }}
+           Backups stored in   : {{ backup_dir }}
+          ════════════════════════════════════════════════
+
+    - name: Fail if go-ble-orchestrator not running
+      fail:
+        msg: "go-ble-orchestrator is not active after deployment."
+      when: final_orchestrator_status.stdout | default('') not in ['active', 'activating']
+
+    - name: Fail if gateway-dashboard not running
+      fail:
+        msg: "gateway-dashboard is not active after deployment."
+      when: final_gateway_status.stdout | default('') not in ['active', 'activating']
