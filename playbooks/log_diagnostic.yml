@@ -7,26 +7,27 @@
     - name: Standardize MAC Formats
       set_fact:
         mac_colons: "{{ DEVICE_ID | replace('_', ':') | upper | trim }}"
+        mac_underscores: "{{ DEVICE_ID | replace(':', '_') | lower | trim }}"
         current_action: "{{ ACTION }}"
 
-    - name: DIAGNOSTIC - File and User Check
-      shell: "whoami && ls -lh /opt/go-ble-orchestrator/app.log && tail -n 2 /opt/go-ble-orchestrator/app.log"
-      register: diag_out
-
-    - name: Show System Diagnostic
-      debug:
-        var: diag_out.stdout_lines
-
-    - name: Action - Grep Device Info
-      # We use 'grep -E' for extended regex and 'fixed strings' to avoid any escaping weirdness
-      shell: "grep -i '{{ mac_colons }}' /opt/go-ble-orchestrator/app.log | tail -n 20"
+    - name: Action - Grep Device Info (Optimized for 2.4GB file)
+      # Instead of reading 2.4GB, we read the last 500,000 lines (roughly the last hour or two)
+      shell: "tail -n 500000 /opt/go-ble-orchestrator/app.log | grep -Fi '{{ mac_colons }}' | tail -n 50"
       register: grep_output
       when: current_action == "Grep Info"
-      ignore_errors: yes
 
-    - name: Display Grep Results
+    - name: Action - Search JSON Logs
+      # find and awk are already fast, no changes needed here
+      shell: |
+        TARGET_EPOCH=$(date -d '{{ START_TIME | default("now - 1 hour") }}' +%s)
+        find /opt/go-ble-orchestrator/json_logs -name "*{{ mac_underscores }}*" -exec awk -v ts="$TARGET_EPOCH" '$1 >= ts' {} \;
+      register: json_output
+      when: current_action == "Search JSON"
+
+    - name: Display Results
       debug:
         msg: 
           - "Search String: [{{ mac_colons }}]"
-          - "Results: {{ grep_output.stdout_lines }}"
-      when: current_action == "Grep Info"
+          - "--- LOG ENTRIES FOUND ---"
+          - "{{ grep_output.stdout_lines if current_action == 'Grep Info' else json_output.stdout_lines }}"
+      when: current_action != "Tail Live"
