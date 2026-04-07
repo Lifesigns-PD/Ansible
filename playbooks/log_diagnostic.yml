@@ -6,38 +6,31 @@
   tasks:
     - name: Standardize MAC Formats
       set_fact:
-        # We use the survey variable directly here
         mac_colons: "{{ DEVICE_ID | replace('_', ':') | upper }}"
         mac_underscores: "{{ DEVICE_ID | replace(':', '_') | lower }}"
         current_action: "{{ ACTION }}"
 
-    - name: DEBUG - Show search strings
-      debug:
-        msg: 
-          - "Searching for: {{ mac_colons }}"
-          - "Action selected: {{ current_action }}"
-
     - name: Action - Grep Device Info from App Log
-      # -F treates the pattern as a fixed string (better for colons)
-      # -i handles case just in case
-      shell: "grep -Fi '{{ mac_colons }}' /opt/go-ble-orchestrator/app.log | tail -n 20"
+      # We use 'cat' first to ensure we can read the file, then pipe to grep
+      shell: "cat /opt/go-ble-orchestrator/app.log | grep -Fi '{{ mac_colons }}' | tail -n 20"
       register: grep_output
       when: current_action == "Grep Info"
-
-    - name: Action - Live Tail App Log
-      shell: "timeout 60s tail -f /opt/go-ble-orchestrator/app.log | grep --line-buffered -Fi '{{ mac_colons }}'"
-      register: tail_output
-      when: current_action == "Tail Live"
+      ignore_errors: yes
 
     - name: Action - Search JSON by Timestamp
       shell: |
         TARGET_EPOCH=$(date -d '{{ START_TIME | default("now - 1 hour") }}' +%s)
-        find /opt/go-ble-orchestrator/json_logs -name "*{{ mac_underscores }}*" \
-        -exec awk -v ts="$TARGET_EPOCH" '$1 >= ts' {} \;
+        find /opt/go-ble-orchestrator/json_logs -name "*{{ mac_underscores }}*" -exec awk -v ts="$TARGET_EPOCH" '$1 >= ts' {} \;
       register: json_output
       when: current_action == "Search JSON"
+      ignore_errors: yes
 
-    - name: Display Results
+    - name: Display Grep Results
       debug:
-        msg: "{{ grep_output.stdout_lines if current_action == 'Grep Info' else (json_output.stdout_lines if current_action == 'Search JSON' else 'Tail task finished') }}"
-      when: current_action != "Tail Live"
+        var: grep_output.stdout_lines
+      when: current_action == "Grep Info"
+
+    - name: Display JSON Results
+      debug:
+        var: json_output.stdout_lines
+      when: current_action == "Search JSON"
