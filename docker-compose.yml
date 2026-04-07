@@ -1,0 +1,15 @@
+version: '3.8'
+
+services:
+  ansible-manager:
+    build: .
+    container_name: semaphore-ansible-manager
+    network_mode: "host" # CRITICAL: Allows the container to see Tailscale MagicDNS on the host
+    volumes:
+      - .:/app
+      - ~/.ssh:/root/.ssh:ro # Mounts your local SSH keys (read-only) to connect to servers
+    env_file:
+      - ./scripts/.env # Automatically loads your Tailscale and Semaphore keys
+    stdin_open: true
+    tty: true
+    restart: always

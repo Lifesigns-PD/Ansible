@@ -1,0 +1,39 @@
+---
+- name: BLE Orchestrator Diagnostic
+  hosts: all
+  gather_facts: false
+  vars:
+    # These will be populated by the Semaphore UI Survey
+    device_id: "{{ DEVICE_ID }}"
+    action: "{{ ACTION }}"
+    start_time: "{{ START_TIME | default('now - 1 hour') }}"
+
+  tasks:
+    - name: Standardize MAC Formats
+      set_fact:
+        mac_colons: "{{ device_id | replace('_', ':') | lower }}"
+        mac_underscores: "{{ device_id | replace(':', '_') | lower }}"
+
+    - name: Action - Grep Device Info from App Log
+      shell: "grep -i '{{ mac_colons }}' /opt/go-ble-orchestrator/app.log | tail -n 20"
+      register: grep_output
+      when: action == "Grep Info"
+
+    - name: Action - Live Tail App Log
+      # We use timeout so the task eventually finishes in the UI
+      shell: "timeout 60s tail -f /opt/go-ble-orchestrator/app.log | grep --line-buffered '{{ mac_colons }}'"
+      when: action == "Tail Live"
+
+    - name: Action - Search JSON by Timestamp
+      # Converts human time to epoch and compares against the first column in JSON logs
+      shell: |
+        TARGET_EPOCH=$(date -d '{{ start_time }}' +%s)
+        find /opt/go-ble-orchestrator/json_logs -name "*{{ mac_underscores }}*" \
+        -exec awk -v ts="$TARGET_EPOCH" '$1 >= ts' {} \;
+      register: json_output
+      when: action == "Search JSON"
+
+    - name: Display Results
+      debug:
+        msg: "{{ grep_output.stdout_lines if action == 'Grep Info' else json_output.stdout_lines }}"
+      when: action != "Tail Live"

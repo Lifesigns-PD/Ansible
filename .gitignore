@@ -42,3 +42,5 @@ env/
 semaphore.log
 scripts/semaphorecleanup.py
 create.sh
+
+scripts\orchestrator_nodes.db

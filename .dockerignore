@@ -1,0 +1,7 @@
+.venv
+pycache
+*.pyc
+*.log
+.git
+.env
+scripts/orchestrator_nodes.db
