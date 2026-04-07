@@ -6,31 +6,27 @@
   tasks:
     - name: Standardize MAC Formats
       set_fact:
-        mac_colons: "{{ DEVICE_ID | replace('_', ':') | upper }}"
-        mac_underscores: "{{ DEVICE_ID | replace(':', '_') | lower }}"
+        mac_colons: "{{ DEVICE_ID | replace('_', ':') | upper | trim }}"
         current_action: "{{ ACTION }}"
 
-    - name: Action - Grep Device Info from App Log
-      # We use 'cat' first to ensure we can read the file, then pipe to grep
-      shell: "cat /opt/go-ble-orchestrator/app.log | grep -Fi '{{ mac_colons }}' | tail -n 20"
+    - name: DIAGNOSTIC - File and User Check
+      shell: "whoami && ls -lh /opt/go-ble-orchestrator/app.log && tail -n 2 /opt/go-ble-orchestrator/app.log"
+      register: diag_out
+
+    - name: Show System Diagnostic
+      debug:
+        var: diag_out.stdout_lines
+
+    - name: Action - Grep Device Info
+      # We use 'grep -E' for extended regex and 'fixed strings' to avoid any escaping weirdness
+      shell: "grep -i '{{ mac_colons }}' /opt/go-ble-orchestrator/app.log | tail -n 20"
       register: grep_output
       when: current_action == "Grep Info"
       ignore_errors: yes
 
-    - name: Action - Search JSON by Timestamp
-      shell: |
-        TARGET_EPOCH=$(date -d '{{ START_TIME | default("now - 1 hour") }}' +%s)
-        find /opt/go-ble-orchestrator/json_logs -name "*{{ mac_underscores }}*" -exec awk -v ts="$TARGET_EPOCH" '$1 >= ts' {} \;
-      register: json_output
-      when: current_action == "Search JSON"
-      ignore_errors: yes
-
     - name: Display Grep Results
       debug:
-        var: grep_output.stdout_lines
+        msg: 
+          - "Search String: [{{ mac_colons }}]"
+          - "Results: {{ grep_output.stdout_lines }}"
       when: current_action == "Grep Info"
-
-    - name: Display JSON Results
-      debug:
-        var: json_output.stdout_lines
-      when: current_action == "Search JSON"
