@@ -3,7 +3,7 @@
   hosts: all
   gather_facts: false
   vars:
-    # These will be populated by the Semaphore UI Survey
+    # Maps Semaphore Survey Variables to Ansible variables
     device_id: "{{ DEVICE_ID }}"
     action: "{{ ACTION }}"
     start_time: "{{ START_TIME | default('now - 1 hour') }}"
@@ -11,21 +11,25 @@
   tasks:
     - name: Standardize MAC Formats
       set_fact:
-        mac_colons: "{{ device_id | replace('_', ':') | lower }}"
+        # For app.log: F2:A2:4C:C2:CA:E4 (Uppercase)
+        mac_colons: "{{ device_id | replace('_', ':') | upper }}"
+        # For json_logs folder: f2_a2_4c_c2_ca_e4 (Lowercase)
         mac_underscores: "{{ device_id | replace(':', '_') | lower }}"
 
     - name: Action - Grep Device Info from App Log
+      # Searches for the colon-formatted MAC in the main app log
       shell: "grep -i '{{ mac_colons }}' /opt/go-ble-orchestrator/app.log | tail -n 20"
       register: grep_output
       when: action == "Grep Info"
 
     - name: Action - Live Tail App Log
-      # We use timeout so the task eventually finishes in the UI
-      shell: "timeout 60s tail -f /opt/go-ble-orchestrator/app.log | grep --line-buffered '{{ mac_colons }}'"
+      # Streams live data for 60 seconds filtering by the MAC
+      shell: "timeout 60s tail -f /opt/go-ble-orchestrator/app.log | grep --line-buffered -i '{{ mac_colons }}'"
+      register: tail_output
       when: action == "Tail Live"
 
     - name: Action - Search JSON by Timestamp
-      # Converts human time to epoch and compares against the first column in JSON logs
+      # Converts human time to epoch and searches inside the underscore-formatted JSON files
       shell: |
         TARGET_EPOCH=$(date -d '{{ start_time }}' +%s)
         find /opt/go-ble-orchestrator/json_logs -name "*{{ mac_underscores }}*" \
@@ -35,5 +39,5 @@
 
     - name: Display Results
       debug:
-        msg: "{{ grep_output.stdout_lines if action == 'Grep Info' else json_output.stdout_lines }}"
+        msg: "{{ (grep_output.stdout_lines if action == 'Grep Info' else json_output.stdout_lines) | default('No recent log entries found for this device.') }}"
       when: action != "Tail Live"
