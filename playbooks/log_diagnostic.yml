@@ -19,10 +19,7 @@
       shell: "timeout 60s tail -f /opt/go-ble-orchestrator/app.log | grep --line-buffered -Fi '{{ mac_colons }}'"
       when: current_action == "Tail Live"
 
-   - name: Action - Search Device-Specific Logs
-      # 1. Look for files named f2_a2_4c_c2_ca_e4.log
-      # 2. Convert start time to Epoch
-      # 3. Filter lines where first column is >= Epoch
+    - name: Action - Search Device-Specific Logs
       shell: |
         TARGET_EPOCH=$(date -d '{{ START_TIME | default("now - 1 hour") }}' +%s)
         FILE_PATH="/opt/go-ble-orchestrator/json_logs/{{ mac_underscores }}.log"
