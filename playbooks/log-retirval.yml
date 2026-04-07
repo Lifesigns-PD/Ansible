@@ -1,0 +1,102 @@
+---
+- name: "BLE Orchestrator: Advanced Node Diagnostic"
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: "Deployment: Provision Diagnostic Engine to Remote Node"
+      copy:
+        dest: /tmp/log_hunter_cli.py
+        mode: '0755'
+        content: |
+          #!/usr/bin/env python3
+          import os
+          import subprocess
+          from datetime import datetime
+          from pathlib import Path
+
+          def parse_time_to_epoch(dt_str):
+              if not dt_str or dt_str == "now - 1 hour":
+                  return int(datetime.now().timestamp()) - 3600
+              try:
+                  return int(dt_str)
+              except ValueError:
+                  try:
+                      # Try standard ISO format
+                      dt = datetime.strptime(dt_str.replace("T", " "), "%Y-%m-%d %H:%M:%S")
+                      return int(dt.timestamp())
+                  except:
+                      # Fallback to system date command for relative strings
+                      res = subprocess.run(["date", "-d", dt_str, "+%s"], capture_output=True, text=True)
+                      return int(res.stdout.strip()) if res.returncode == 0 else None
+
+          def find_file(filename):
+              paths = ["/opt/go-ble-orchestrator", "/opt/go-ble-orchestrator/logs"]
+              for p in paths:
+                  full_path = Path(p) / filename
+                  if full_path.exists():
+                      return str(full_path)
+              return None
+
+          def run_diagnostic():
+              action = os.getenv("ACTION", "Grep app.log")
+              target_id = os.getenv("DEVICE_ID", "").strip()
+              start_time_str = os.getenv("START_TIME", "now - 1 hour")
+              
+              if not target_id:
+                  print("Error: No Device ID provided.")
+                  return
+
+              # 1. Handle Standard Log Grepping
+              if "Grep" in action:
+                  log_filename = action.split(" ")[1]
+                  file_path = find_file(log_filename)
+                  if not file_path:
+                      print(f"Error: {log_filename} not found in /opt/ or /opt/logs/")
+                      return
+
+                  mac_colons = target_id.replace("_", ":").upper()
+                  print(f"--- Searching {log_filename} for {mac_colons} ---")
+                  # Use -a to treat binary as text, -i for case insensitivity
+                  cmd = f"tail -n 100000 {file_path} | grep -ia '{mac_colons}' | tail -n 50"
+                  subprocess.run(cmd, shell=True)
+
+              # 2. Handle JSON Log Search by Timestamp
+              elif action == "Search JSON":
+                  mac_underscores = target_id.replace(":", "_").lower()
+                  start_ts = parse_time_to_epoch(start_time_str)
+                  
+                  # Look for json_logs folder
+                  json_dir = find_file("json_logs") or "/opt/go-ble-orchestrator/json_logs"
+                  file_path = Path(json_dir) / f"{mac_underscores}.log"
+                  
+                  if file_path.exists():
+                      print(f"--- Extracting {mac_underscores}.log from Epoch {start_ts} ---")
+                      # AWK filters by the first column (Unix Timestamp)
+                      awk_cmd = f"awk -v ts={start_ts} '$1 >= ts' {file_path} | tail -n 100"
+                      subprocess.run(awk_cmd, shell=True)
+                  else:
+                      print(f"File not found: {file_path}")
+
+              # 3. Handle Live Tail
+              elif action == "Tail Live":
+                  file_path = find_file("app.log")
+                  mac_colons = target_id.replace("_", ":").upper()
+                  print(f"--- Starting 60s Live Tail for {mac_colons} ---")
+                  cmd = f"timeout 60s stdbuf -oL tail -f {file_path} | grep --line-buffered -Fi '{mac_colons}'"
+                  subprocess.run(cmd, shell=True)
+
+          if __name__ == "__main__":
+              run_diagnostic()
+
+    - name: "Execution: Trigger Diagnostic Logic"
+      shell: "python3 /tmp/log_hunter_cli.py"
+      environment:
+        DEVICE_ID: "{{ DEVICE_ID }}"
+        ACTION: "{{ ACTION }}"
+        START_TIME: "{{ START_TIME | default('now - 1 hour') }}"
+      register: hunter_output
+
+    - name: "Output: Present Diagnostic Findings"
+      debug:
+        msg: "{{ hunter_output.stdout_lines }}"
+      when: ACTION != "Tail Live"
