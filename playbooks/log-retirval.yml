@@ -82,25 +82,23 @@
                   print(f"--- FETCHING DATA: {file_path} for [{target_id}] ---")
                   print(f"--- PERIOD: Since {start_time_str} ({ts_dash}) ---")
                   
-                  # BATCH MODE: We capture the output and print it all at once at the end
-                  # Seeking 400MB is safer for a 2.4GB file to ensure 1 hour of coverage
+                  # BATCH MODE: Output limited to last 100 matches
                   cmd = (
                       f"tail -c 400M {file_path} | "
                       f"grep -iaF '{target_id}' | "
                       f"awk -v t1='{ts_slash}' -v t2='{ts_dash}' "
                       "'{ if ($1 \" \" $2 >= t1 || $1 \" \" $2 >= t2) print $0 }' | "
-                      "tail -n 3000"
+                      "tail -n 100"
                   )
                   
                   try:
-                      # Capture output instead of streaming to avoid buffer hangs
                       result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=120)
                       if result.stdout:
                           print(result.stdout)
                       else:
-                          print("No log entries found for this device in the specified time range.")
+                          print("No log entries found for this keyword in the specified time range.")
                   except subprocess.TimeoutExpired:
-                      print("ERROR: Process timed out. The log file is too large to process in this window.")
+                      print("ERROR: Process timed out.")
 
               elif action == "Search JSON":
                   file_name = f"{mac_underscores}.log"
@@ -108,7 +106,8 @@
                   
                   if file_path and os.path.exists(file_path):
                       print(f"--- FETCHING JSON DATA: {file_path} ---")
-                      awk_cmd = f"awk -v ts={start_ts} '{{ split($1, a, \"[\"); split(a[length(a)], b, \"]\"); val=b[1]; if (val == \"\") val=$1; if (val >= ts) print $0 }}' {file_path} | tail -n 3000"
+                      # Limiting to last 100 records
+                      awk_cmd = f"awk -v ts={start_ts} '{{ split($1, a, \"[\"); split(a[length(a)], b, \"]\"); val=b[1]; if (val == \"\") val=$1; if (val >= ts) print $0 }}' {file_path} | tail -n 100"
                       
                       try:
                           result = subprocess.run(awk_cmd, shell=True, capture_output=True, text=True, timeout=120)
@@ -123,9 +122,9 @@
                   if not file_path:
                       print("Error: app.log not found.")
                       return
-                  print(f"--- STARTING LIVE STREAM (300s) for {target_id} ---")
-                  # Live tail still uses streaming but with unbuffered grep
-                  cmd = f"timeout 300s stdbuf -oL tail -f {file_path} | grep --line-buffered -iaF '{target_id}'"
+                  # Live tail duration set to 120 seconds
+                  print(f"--- STARTING LIVE STREAM (120s) for {target_id} ---")
+                  cmd = f"timeout 120s stdbuf -oL tail -f {file_path} | grep --line-buffered -iaF '{target_id}'"
                   subprocess.run(cmd, shell=True)
 
           if __name__ == "__main__":
