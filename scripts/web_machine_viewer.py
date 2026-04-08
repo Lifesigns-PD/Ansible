@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Enhanced Tailscale Machine Viewer + Orchestrator Node Manager
-Updates: MagicDNS, SQLite persistence, dual-location standard/JSON logs,
+Features: Live MagicDNS via Tailscale API, dual-location standard/JSON logs,
 3-second buffered live tailing, performance monitoring, and JSON timestamp1 range extraction.
 """
 
@@ -14,68 +14,36 @@ import socket
 import threading
 import time
 import queue
-import sqlite3
 from datetime import datetime
 from pathlib import Path
 from flask import Flask, render_template_string, jsonify, request, session, redirect, url_for, flash, Response, send_file
 from dotenv import load_dotenv
 
-# Load environment variables
+try:
+    import requests
+except ImportError:
+    requests = None
+
 env_path = Path(__file__).parent / '.env'
 load_dotenv(env_path)
 
 app = Flask(__name__)
 app.secret_key = os.urandom(24)
 
-# Configuration
 LINUX_USER = os.getenv("LINUX_USER", "mpr")
 BASE_PATH = "/opt/go-ble-orchestrator"
 LOG_DIRS = [f"{BASE_PATH}/logs", BASE_PATH]
-JSON_LOG_DIRS = [f"{BASE_PATH}/logs/json_logs", f"{BASE_PATH}/json_logs"]
-DB_PATH = Path(__file__).parent / "orchestrator_nodes.db"
+JSON_LOG_DIRS = [f"{BASE_PATH}/logs/json_logs"]
 
-# ============================================================================
-# DATABASE LOGIC
-# ============================================================================
-
-def init_db():
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS known_nodes 
-                 (magic_dns TEXT PRIMARY KEY, last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
-    conn.commit()
-    conn.close()
-
-def save_node_to_db(magic_dns):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("INSERT OR REPLACE INTO known_nodes (magic_dns, last_seen) VALUES (?, CURRENT_TIMESTAMP)", (magic_dns,))
-    conn.commit()
-    conn.close()
-
-def get_stored_nodes():
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("SELECT magic_dns FROM known_nodes")
-    nodes = [row[0] for row in c.fetchall()]
-    conn.close()
-    return nodes
-
-# ============================================================================
-# UTILITIES
-# ============================================================================
+TAILSCALE_API_KEY = os.getenv("Tailscale-tailnet-apikey")
+TAILSCALE_TENANT_NAME = os.getenv("Tailscale-tailnet-name")
 
 def parse_datetime_to_epoch(dt_str):
-    """Parse 'YYYY-MM-DDTHH:MM' string from browser input to epoch seconds."""
     try:
         dt = datetime.strptime(dt_str, "%Y-%m-%dT%H:%M")
         return int(dt.timestamp())
     except Exception:
         return None
-
-# ============================================================================
-# SSH & BUFFERED STREAMING LOGIC
-# ============================================================================
 
 active_ssh_sessions = {}
 
@@ -129,30 +97,49 @@ def execute_ssh(command, timeout=30):
     except Exception as e:
         return None, str(e)
 
-# ============================================================================
-# TAILSCALE POWERSHELL INTEGRATION
-# ============================================================================
-
-def get_machines_via_powershell():
+def get_live_machines():
+    machines = {}
+    
+    if requests and TAILSCALE_API_KEY and TAILSCALE_TENANT_NAME:
+        try:
+            url = f"https://api.tailscale.com/api/v2/tailnet/-/devices?fields=all"
+            resp = requests.get(url, auth=(TAILSCALE_API_KEY, ""), timeout=15)
+            if resp.status_code == 200:
+                for dev in resp.json().get('devices', []):
+                    name = dev.get('name', '')
+                    if not name: continue
+                    dns = name.rstrip('.')
+                    machines[dns] = {
+                        'magic_dns': dns,
+                        'ip': dev.get('addresses', [''])[0].split('/')[0] or 'Unknown',
+                        'online': dev.get('connectedToControl', False),
+                        'os': dev.get('os', 'Unknown')
+                    }
+        except Exception as e:
+            print(f"[API Error] {e}")
+    
     try:
-        result = subprocess.run(["powershell", "-Command", "tailscale status --json"], 
-                                capture_output=True, text=True, check=True, timeout=10)
-        data = json.loads(result.stdout)
-        peers = data.get('Peer', {})
-        stored_dns = get_stored_nodes()
-        machines = []
-        for p_id, p_data in peers.items():
-            dns = p_data.get('DNSName', '').rstrip('.')
-            if not dns: continue
-            online = p_data.get('Online', False)
-            if online and dns not in stored_dns: save_node_to_db(dns)
-            machines.append({
-                'magic_dns': dns, 'ip': p_data.get('TailscaleIPs', ['Unknown'])[0],
-                'online': online, 'os': p_data.get('OS', 'Unknown')
-            })
-        return sorted(machines, key=lambda x: (not x['online'], x['magic_dns']))
-    except:
-        return [{'magic_dns': d, 'online': False} for d in get_stored_nodes()]
+        result = subprocess.run(["powershell", "-Command", "tailscale status --json"],
+                                capture_output=True, text=True, timeout=10)
+        if result.returncode == 0:
+            data = json.loads(result.stdout)
+            for p_id, p_data in data.get('Peer', {}).items():
+                dns = p_data.get('DNSName', '').rstrip('.')
+                if not dns: continue
+                if dns in machines:
+                    machines[dns]['online'] = p_data.get('Online', machines[dns]['online'])
+                    machines[dns]['os'] = p_data.get('OS', machines[dns]['os'])
+                else:
+                    machines[dns] = {
+                        'magic_dns': dns,
+                        'ip': p_data.get('TailscaleIPs', ['Unknown'])[0],
+                        'online': p_data.get('Online', False),
+                        'os': p_data.get('OS', 'Unknown')
+                    }
+    except Exception as e:
+        print(f"[Local Status Error] {e}")
+    
+    return sorted(machines.values(), key=lambda x: (not x['online'], x['magic_dns']))
 
 # ============================================================================
 # TEMPLATES
@@ -255,7 +242,7 @@ BASE_UI = """
 
 @app.route('/')
 def index():
-    machines = get_machines_via_powershell()
+    machines = get_live_machines()
     html = """
     <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
         {% for m in machines %}
@@ -282,7 +269,6 @@ def login():
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     try:
         client.connect(hostname=dns, username=user, password=pw, timeout=8)
-        save_node_to_db(dns)
         sid = str(uuid.uuid4())
         active_ssh_sessions[sid] = client
         session['ssh_id'], session['target_dns'] = sid, dns
@@ -343,6 +329,7 @@ def dashboard():
                 <div class="pt-6 border-t border-slate-700">
                     <h4 class="text-sm font-bold mb-3 text-emerald-400">📥 Download JSON Data by Time</h4>
                     <p class="text-[10px] text-slate-500 mb-3">Searches the <code class="bg-black p-0.5 rounded text-emerald-500 font-mono">timestamp1</code> field.</p>
+                    <button type="button" onclick="runCmd('echo === First/Last timestamps ===; grep -m1 \"======\" /opt/go-ble-orchestrator/logs/json_logs/04_E3_E5_DC_E8_96.log | grep -oP \"\\d{{4}}-\\d{{2}}-\\d{{2}}\\s+\\d{{2}}:\\d{{2}}:\\d{{2}}\"; tail -50 /opt/go-ble-orchestrator/logs/json_logs/04_E3_E5_DC_E8_96.log | grep -m1 \"======\" | grep -oP \"\\d{{4}}-\\d{{2}}-\\d{{2}}\\s+\\d{{2}}:\\d{{2}}:\\d{{2}}\"')" class="w-full bg-slate-800 hover:bg-slate-700 text-xs py-2 rounded mb-3 border border-slate-600">🔍 Debug: timestamp1 Range</button>
                     <form action="/api/collect_json" method="POST" class="space-y-3">
                         <div>
                             <label class="block text-[10px] uppercase font-bold text-slate-500 mb-1">Select File</label>
@@ -407,7 +394,9 @@ def api_exec():
 @app.route('/api/collect_json', methods=['POST'])
 def collect_json():
     """Collect JSON log entries by timestamp1 epoch and stream for download."""
-    if 'ssh_id' not in session: return redirect('/')
+    if 'ssh_id' not in session: 
+        flash("Session expired. Please login again.")
+        return redirect('/')
     
     start_ts = parse_datetime_to_epoch(request.form.get('from_time'))
     end_ts = parse_datetime_to_epoch(request.form.get('to_time'))
@@ -417,25 +406,47 @@ def collect_json():
         flash("Invalid time range provided.")
         return redirect(url_for('dashboard'))
 
-    # Build awk command to search across selected file(s)
     if selected_file == 'all':
         patterns = " ".join([f"{d}/*.log" for d in (LOG_DIRS + JSON_LOG_DIRS)])
     else:
         patterns = " ".join([f"{d}/{selected_file}" for d in (LOG_DIRS + JSON_LOG_DIRS)])
+
+    search_script = f"""
+import sys, json, re
+from datetime import datetime
+start_ts = {start_ts}
+end_ts = {end_ts}
+in_range = False
+for line in sys.stdin:
+    stripped = line.strip()
+    if stripped.startswith('==========') and '----------' not in stripped:
+        parts = stripped.split('==========')
+        if len(parts) >= 2:
+            ts_str = parts[1].strip()
+            in_range = False
+            try:
+                if '.' in ts_str:
+                    file_ts = int(datetime.strptime(ts_str, '%Y-%m-%d %H:%M:%S.%f').timestamp())
+                else:
+                    file_ts = int(datetime.strptime(ts_str, '%Y-%m-%d %H:%M:%S').timestamp())
+                if start_ts <= file_ts <= end_ts:
+                    in_range = True
+            except Exception as e:
+                pass
+    elif in_range and stripped.startswith('['):
+        try:
+            for obj in json.loads(stripped):
+                print(json.dumps(obj))
+        except:
+            pass
+"""
     
-    # Updated command targets 'timestamp1' instead of 'timestamp'
-    # Field separator (-F) matches the key name including quotes and colon
-    # split($2, a, "[,}]") extracts the value after the separator until a delimiter
-    search_cmd = (
-        f"grep -h '\"timestamp1\"' {patterns} 2>/dev/null | "
-        f"awk -F'\"timestamp1\":' '{{ split($2, a, \"[,}}]\"); ts=a[1]; "
-        f"if (ts >= {start_ts} && ts <= {end_ts}) print $0 }}'"
-    )
+    search_cmd = f"cat {patterns} 2>/dev/null | python3 -c {repr(search_script)}"
     
     out, err = execute_ssh(search_cmd, timeout=60)
     
-    if (err and not out) or not out or not out.strip():
-        flash("No data found for the selected file and time range.")
+    if not out or not out.strip():
+        flash(f"No data found for {selected_file} between {start_ts}-{end_ts}.")
         return redirect(url_for('dashboard'))
 
     file_label = selected_file.replace('.log', '') if selected_file != 'all' else 'all'
@@ -503,5 +514,4 @@ def stream_log(filename):
     return Response(streamer.stream(), mimetype='text/event-stream')
 
 if __name__ == '__main__':
-    init_db()
-    app.run(host='127.0.0.1', port=5005, debug=False)
+    app.run(host='0.0.0.0', port=8008, debug=False)

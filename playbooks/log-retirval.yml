@@ -11,6 +11,7 @@
           #!/usr/bin/env python3
           import os
           import subprocess
+          import sys
           from datetime import datetime
           from pathlib import Path
 
@@ -21,24 +22,32 @@
                   return int(dt_str)
               except ValueError:
                   try:
-                      # Try standard ISO format
                       dt = datetime.strptime(dt_str.replace("T", " "), "%Y-%m-%d %H:%M:%S")
                       return int(dt.timestamp())
                   except:
-                      # Fallback to system date command for relative strings
                       res = subprocess.run(["date", "-d", dt_str, "+%s"], capture_output=True, text=True)
                       return int(res.stdout.strip()) if res.returncode == 0 else None
 
           def find_file(filename):
+              mapping = {
+                  "info": "app.log",
+                  "app": "app.log",
+                  "mqtt": "mqtt-status.log",
+                  "sys": "sys-perf.log",
+                  "stats": "stats_5s.log"
+              }
+              base_name = filename.lower().replace(".log", "")
+              actual_filename = mapping.get(base_name, filename)
+              
               paths = ["/opt/go-ble-orchestrator", "/opt/go-ble-orchestrator/logs"]
               for p in paths:
-                  full_path = Path(p) / filename
+                  full_path = Path(p) / actual_filename
                   if full_path.exists():
                       return str(full_path)
               return None
 
           def run_diagnostic():
-              action = os.getenv("ACTION", "Grep app.log")
+              action = os.getenv("ACTION", "Grep Info")
               target_id = os.getenv("DEVICE_ID", "").strip()
               start_time_str = os.getenv("START_TIME", "now - 1 hour")
               
@@ -46,43 +55,59 @@
                   print("Error: No Device ID provided.")
                   return
 
-              # 1. Handle Standard Log Grepping
               if "Grep" in action:
-                  log_filename = action.split(" ")[1]
+                  parts = action.split(" ")
+                  log_filename = parts[1] if len(parts) > 1 else "app.log"
                   file_path = find_file(log_filename)
                   if not file_path:
-                      print(f"Error: {log_filename} not found in /opt/ or /opt/logs/")
+                      print(f"Error: Could not locate log file for '{log_filename}'")
                       return
 
                   mac_colons = target_id.replace("_", ":").upper()
-                  print(f"--- Searching {log_filename} for {mac_colons} ---")
-                  # Use -a to treat binary as text, -i for case insensitivity
-                  cmd = f"tail -n 100000 {file_path} | grep -ia '{mac_colons}' | tail -n 50"
+                  print(f"--- Searching {os.path.basename(file_path)} for [{mac_colons}] ---")
+                  # -F = Fixed strings (handles colons better), -a = text mode
+                  # Increased tail to 500k to ensure we find data in large 2.4GB files
+                  cmd = f"tail -n 500000 {file_path} | grep -iaF '{mac_colons}' | tail -n 50"
+                  sys.stdout.flush()
                   subprocess.run(cmd, shell=True)
 
-              # 2. Handle JSON Log Search by Timestamp
               elif action == "Search JSON":
                   mac_underscores = target_id.replace(":", "_").lower()
                   start_ts = parse_time_to_epoch(start_time_str)
                   
-                  # Look for json_logs folder
-                  json_dir = find_file("json_logs") or "/opt/go-ble-orchestrator/json_logs"
+                  json_dir = None
+                  possible_dirs = ["/opt/go-ble-orchestrator/json_logs", "/opt/go-ble-orchestrator/logs/json_logs"]
+                  for d in possible_dirs:
+                      if os.path.isdir(d):
+                          json_dir = d
+                          break
+                  
+                  if not json_dir:
+                      print("Error: 'json_logs' directory not found.")
+                      return
+
                   file_path = Path(json_dir) / f"{mac_underscores}.log"
                   
                   if file_path.exists():
                       print(f"--- Extracting {mac_underscores}.log from Epoch {start_ts} ---")
-                      # AWK filters by the first column (Unix Timestamp)
-                      awk_cmd = f"awk -v ts={start_ts} '$1 >= ts' {file_path} | tail -n 100"
+                      # Clean the first column to ensure it's numeric before comparing
+                      awk_cmd = f"awk -v ts={start_ts} '{{ gsub(/[^0-9]/, \"\", $1); if ($1 >= ts) print $0 }}' {file_path} | tail -n 100"
+                      sys.stdout.flush()
                       subprocess.run(awk_cmd, shell=True)
                   else:
-                      print(f"File not found: {file_path}")
+                      print(f"File NOT FOUND: {file_path}")
+                      print(f"Recent files in {json_dir}:")
+                      subprocess.run(f"ls -t {json_dir} | head -n 10", shell=True)
 
-              # 3. Handle Live Tail
               elif action == "Tail Live":
                   file_path = find_file("app.log")
+                  if not file_path:
+                      print("Error: app.log not found.")
+                      return
                   mac_colons = target_id.replace("_", ":").upper()
                   print(f"--- Starting 60s Live Tail for {mac_colons} ---")
-                  cmd = f"timeout 60s stdbuf -oL tail -f {file_path} | grep --line-buffered -Fi '{mac_colons}'"
+                  cmd = f"timeout 60s stdbuf -oL tail -f {file_path} | grep --line-buffered -iaF '{mac_colons}'"
+                  sys.stdout.flush()
                   subprocess.run(cmd, shell=True)
 
           if __name__ == "__main__":

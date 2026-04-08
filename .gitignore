@@ -43,4 +43,5 @@ semaphore.log
 scripts/semaphorecleanup.py
 create.sh
 
-scripts\orchestrator_nodes.db
+scripts/orchestrator_nodes.db
+scripts/web_machine_viewer.py
