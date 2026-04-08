@@ -330,7 +330,7 @@ def dashboard():
                 <div class="pt-6 border-t border-slate-700">
                     <h4 class="text-sm font-bold mb-3 text-emerald-400">📥 Download JSON Data by Time</h4>
                     <p class="text-[10px] text-slate-500 mb-3">Searches the <code class="bg-black p-0.5 rounded text-emerald-500 font-mono">timestamp1</code> field.</p>
-                    <button type="button" onclick="runCmd('echo === File Info ===; ls -la /opt/go-ble-orchestrator/logs/json_logs/04_E3_E5_DC_E8_96.log; echo === First 5 Lines ===; cat /opt/go-ble-orchestrator/logs/json_logs/04_E3_E5_DC_E8_96.log | head -5')" class="w-full bg-slate-800 hover:bg-slate-700 text-xs py-2 rounded mb-3 border border-slate-600">🔍 Debug: File Info</button>
+                    <button type="button" onclick="runCmd('echo === Test SSH ===; ls -la /opt/go-ble-orchestrator/logs/json_logs/04_E3_E5_DC_E8_96.log; echo === Content ===; head -3 /opt/go-ble-orchestrator/logs/json_logs/04_E3_E5_DC_E8_96.log')" class="w-full bg-slate-800 hover:bg-slate-700 text-xs py-2 rounded mb-3 border border-slate-600">🔍 Debug: SSH Test</button>
                     <form action="/api/collect_json" method="POST" class="space-y-3">
                         <div>
                             <label class="block text-[10px] uppercase font-bold text-slate-500 mb-1">Select File</label>
@@ -439,25 +439,12 @@ PYEOF'''
     out, err = execute_ssh(search_cmd, timeout=60)
     
     if not out or not out.strip():
-        debug_script = f'''python3 << 'PYEOF'
-import sys, json
-from datetime import datetime
-start_ts = {start_ts}
-end_ts = {end_ts}
-first_line = None
-ts_lines = []
-for line in sys.stdin:
-    stripped = line.strip()
-    if first_line is None: first_line = repr(stripped[:100])
-    if '==========' in stripped:
-        ts_lines.append(repr(stripped[:100]))
-    if len(ts_lines) >= 3: break
-print("first_line=" + str(first_line))
-print("ts_samples=" + str(ts_lines))
-PYEOF'''
-        debug_cmd = f"cat {patterns} 2>/dev/null | {debug_script}"
-        debug_out, _ = execute_ssh(debug_cmd, timeout=30)
-        flash(f"Debug: {debug_out[:400] if debug_out else 'no output'}")
+        # Use direct file path instead of glob
+        file_path = f"{JSON_LOG_DIRS[0]}/{selected_file}"
+        simple_script = f"python3 -c 'import sys; print(sys.stdin.read()[:200])'"
+        test_cmd = f"head -3 {file_path} | {simple_script}"
+        test_out, test_err = execute_ssh(test_cmd, timeout=10)
+        flash(f"Simple test: [{test_out[:200]}]")
         return redirect(url_for('dashboard'))
 
     file_label = selected_file.replace('.log', '') if selected_file != 'all' else 'all'

@@ -82,7 +82,6 @@
                   print(f"--- FETCHING DATA: {file_path} for [{target_id}] ---")
                   print(f"--- PERIOD: Since {start_time_str} ({ts_dash}) ---")
                   
-                  # BATCH MODE: Output limited to last 100 matches
                   cmd = (
                       f"tail -c 400M {file_path} | "
                       f"grep -iaF '{target_id}' | "
@@ -106,7 +105,6 @@
                   
                   if file_path and os.path.exists(file_path):
                       print(f"--- FETCHING JSON DATA: {file_path} ---")
-                      # Limiting to last 100 records
                       awk_cmd = f"awk -v ts={start_ts} '{{ split($1, a, \"[\"); split(a[length(a)], b, \"]\"); val=b[1]; if (val == \"\") val=$1; if (val >= ts) print $0 }}' {file_path} | tail -n 100"
                       
                       try:
@@ -117,14 +115,24 @@
                   else:
                       print(f"CRITICAL: Device log {file_name} not found.")
 
-              elif action == "Tail Live":
-                  file_path = find_app_log()
+              elif "Tail" in action:
+                  # If action is "Tail JSON", find the specific device log
+                  if "JSON" in action:
+                      file_name = f"{mac_underscores}.log"
+                      file_path = find_file_path(file_name) or find_file_path(file_name.upper()) or find_file_path(file_name.lower())
+                      grep_filter = "" # No need to grep if we are tailing the specific file
+                  else:
+                      # Default to app.log and grep for the device
+                      file_path = find_app_log()
+                      grep_filter = f" | grep --line-buffered -iaF '{target_id}'"
+
                   if not file_path:
-                      print("Error: app.log not found.")
+                      print("Error: Target log file not found.")
                       return
-                  # Live tail duration set to 120 seconds
+                      
                   print(f"--- STARTING LIVE STREAM (120s) for {target_id} ---")
-                  cmd = f"timeout 120s stdbuf -oL tail -f {file_path} | grep --line-buffered -iaF '{target_id}'"
+                  print(f"--- Source: {file_path} ---")
+                  cmd = f"timeout 120s stdbuf -oL tail -f {file_path}{grep_filter}"
                   subprocess.run(cmd, shell=True)
 
           if __name__ == "__main__":
@@ -142,4 +150,4 @@
     - name: "Output: Present Diagnostic Findings"
       debug:
           msg: "{{ hunter_output.stdout_lines }}"
-      when: ACTION != "Tail Live"
+      when: ACTION != "Tail Live" and ACTION != "Tail JSON"
