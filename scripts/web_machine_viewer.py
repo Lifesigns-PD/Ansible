@@ -412,39 +412,24 @@ def collect_json():
     else:
         patterns = " ".join([f"{d}/{selected_file}" for d in (LOG_DIRS + JSON_LOG_DIRS)])
 
-    search_script = f'''python3 << 'PYEOF'
-import sys, json
-from datetime import datetime
-start_ts = {start_ts}
-end_ts = {end_ts}
-current_ts = None
-for line in sys.stdin:
-    stripped = line.strip()
-    if stripped.startswith('=========='):
-        try:
-            ts_str = stripped.split('==========')[1].strip()
-            current_ts = int(datetime.strptime(ts_str, '%Y-%m-%d %H:%M:%S.%f').timestamp())
-        except:
-            current_ts = None
-    elif stripped.startswith('[') and current_ts and start_ts <= current_ts <= end_ts:
-        try:
-            for obj in json.loads(stripped):
-                print(json.dumps(obj))
-        except:
-            pass
-PYEOF'''
+    file_path = f"{JSON_LOG_DIRS[0]}/{selected_file}"
+    search_script = f'''import sys,json;d=__import__("datetime");s={start_ts};e={end_ts};t=None
+for l in sys.stdin:
+ x=l.strip()
+ if"=========="in x:
+  try:t=int(d.datetime.strptime(x.split("==========")[1].strip(),"%Y-%m-%d %H:%M:%S.%f").timestamp())
+  except:t=None
+ elif x.startswith("[")and t and s<=t<=e:
+  try:
+   for o in json.loads(x):print(json.dumps(o))
+  except:pass'''
     
-    search_cmd = f"cat {patterns} 2>/dev/null | {search_script}"
+    search_cmd = f"python3 -c '{search_script}' {file_path}"
     
     out, err = execute_ssh(search_cmd, timeout=60)
     
     if not out or not out.strip():
-        # Use direct file path instead of glob
-        file_path = f"{JSON_LOG_DIRS[0]}/{selected_file}"
-        simple_script = f"python3 -c 'import sys; print(sys.stdin.read()[:200])'"
-        test_cmd = f"head -3 {file_path} | {simple_script}"
-        test_out, test_err = execute_ssh(test_cmd, timeout=10)
-        flash(f"Simple test: [{test_out[:200]}]")
+        flash(f"No data. Range: {start_ts}-{end_ts}")
         return redirect(url_for('dashboard'))
 
     file_label = selected_file.replace('.log', '') if selected_file != 'all' else 'all'
