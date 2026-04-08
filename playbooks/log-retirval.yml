@@ -87,21 +87,22 @@
                   ts_slash = start_dt.strftime("%Y/%m/%d %H:%M:%S")
                   ts_dash = start_dt.strftime("%Y-%m-%d %H:%M:%S")
 
-                  print(f"--- Searching {file_path} for [{mac_colons}] since {start_time_str} ---")
+                  print(f"--- Searching {file_path} for [{target_id}] since {start_time_str} ---")
                   sys.stdout.flush()
                   
-                  # Optimized: tail a large chunk (500MB), then use awk to filter by both MAC and Time
-                  # This ensures we only get the last hour of logs for that specific device.
+                  # OPTIMIZATION: Grep the MAC/Name FIRST to reduce data volume before AWK processing
+                  # Seeking 300MB back is fast and covers ~1-2 hours of even heavy logs.
                   cmd = (
-                      f"timeout 45s tail -c 500M {file_path} | "
-                      f"awk -v t1='{ts_slash}' -v t2='{ts_dash}' -v mac='{mac_colons}' "
-                      "'{ if ($0 ~ mac && ($1 \" \" $2 >= t1 || $1 \" \" $2 >= t2)) print $0 }' | "
+                      f"timeout 80s tail -c 300M {file_path} | "
+                      f"grep -iaF '{target_id}' | "
+                      f"awk -v t1='{ts_slash}' -v t2='{ts_dash}' "
+                      "'{ if ($1 \" \" $2 >= t1 || $1 \" \" $2 >= t2) print $0 }' | "
                       "tail -n 2000"
                   )
                   try:
-                      subprocess.run(cmd, shell=True, timeout=50)
+                      subprocess.run(cmd, shell=True, timeout=90)
                   except subprocess.TimeoutExpired:
-                      print("Search timed out. The log file may be too dense or disk I/O is slow.")
+                      print("Search timed out. The log file is extremely dense.")
 
               elif action == "Search JSON":
                   # Try exact match, uppercase match, and lowercase match for the .log file
@@ -111,11 +112,11 @@
                   if file_path and os.path.exists(file_path):
                       print(f"--- Extracting from: {file_path} ---")
                       print(f"--- Filters: Timestamp >= {start_ts} (Since {start_time_str}) ---")
-                      # AWK robustly extracts the first column. Added timeout for safety.
-                      awk_cmd = f"timeout 45s awk -v ts={start_ts} '{{ split($1, a, \"[\"); split(a[length(a)], b, \"]\"); val=b[1]; if (val == \"\") val=$1; if (val >= ts) print $0 }}' {file_path} | tail -n 2000"
+                      # AWK robustly extracts the first column.
+                      awk_cmd = f"timeout 80s awk -v ts={start_ts} '{{ split($1, a, \"[\"); split(a[length(a)], b, \"]\"); val=b[1]; if (val == \"\") val=$1; if (val >= ts) print $0 }}' {file_path} | tail -n 2000"
                       sys.stdout.flush()
                       try:
-                          subprocess.run(awk_cmd, shell=True, timeout=50)
+                          subprocess.run(awk_cmd, shell=True, timeout=90)
                       except subprocess.TimeoutExpired:
                           print("Data extraction timed out.")
                   else:
@@ -132,8 +133,9 @@
                   if not file_path:
                       print("Error: app.log not found.")
                       return
-                  print(f"--- Starting 60s Live Tail for {mac_colons} ---")
-                  cmd = f"timeout 60s stdbuf -oL tail -f {file_path} | grep --line-buffered -iaF '{mac_colons}'"
+                  # Increased live tail to 300s (5 minutes) so it doesn't stop too early
+                  print(f"--- Starting 300s Live Tail for {target_id} ---")
+                  cmd = f"timeout 300s stdbuf -oL tail -f {file_path} | grep --line-buffered -iaF '{target_id}'"
                   sys.stdout.flush()
                   subprocess.run(cmd, shell=True)
 
