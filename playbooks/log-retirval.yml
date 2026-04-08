@@ -80,10 +80,12 @@
                   ts_dash = start_dt.strftime("%Y-%m-%d %H:%M:%S")
 
                   print(f"--- FETCHING DATA: {file_path} for [{target_id}] ---")
-                  print(f"--- PERIOD: Since {start_time_str} ({ts_dash}) ---")
+                  print(f"--- PERIOD: Since {start_time_str} ---")
                   
+                  # OPTIMIZATION: Use tail -n (lines) instead of -c (bytes) for much faster disk seeking
+                  # 100,000 lines is usually plenty for the last hour and won't hang the system.
                   cmd = (
-                      f"tail -c 400M {file_path} | "
+                      f"tail -n 100000 {file_path} | "
                       f"grep -iaF '{target_id}' | "
                       f"awk -v t1='{ts_slash}' -v t2='{ts_dash}' "
                       "'{ if ($1 \" \" $2 >= t1 || $1 \" \" $2 >= t2) print $0 }' | "
@@ -91,13 +93,13 @@
                   )
                   
                   try:
-                      result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=120)
+                      result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=60)
                       if result.stdout:
                           print(result.stdout)
                       else:
                           print("No log entries found for this keyword in the specified time range.")
                   except subprocess.TimeoutExpired:
-                      print("ERROR: Process timed out.")
+                      print("ERROR: Search timed out.")
 
               elif action == "Search JSON":
                   file_name = f"{mac_underscores}.log"
@@ -108,7 +110,7 @@
                       awk_cmd = f"awk -v ts={start_ts} '{{ split($1, a, \"[\"); split(a[length(a)], b, \"]\"); val=b[1]; if (val == \"\") val=$1; if (val >= ts) print $0 }}' {file_path} | tail -n 100"
                       
                       try:
-                          result = subprocess.run(awk_cmd, shell=True, capture_output=True, text=True, timeout=120)
+                          result = subprocess.run(awk_cmd, shell=True, capture_output=True, text=True, timeout=60)
                           print(result.stdout if result.stdout else "No JSON records found for this time range.")
                       except subprocess.TimeoutExpired:
                           print("ERROR: JSON extraction timed out.")
@@ -116,13 +118,11 @@
                       print(f"CRITICAL: Device log {file_name} not found.")
 
               elif "Tail" in action:
-                  # If action is "Tail JSON", find the specific device log
                   if "JSON" in action:
                       file_name = f"{mac_underscores}.log"
                       file_path = find_file_path(file_name) or find_file_path(file_name.upper()) or find_file_path(file_name.lower())
-                      grep_filter = "" # No need to grep if we are tailing the specific file
+                      grep_filter = ""
                   else:
-                      # Default to app.log and grep for the device
                       file_path = find_app_log()
                       grep_filter = f" | grep --line-buffered -iaF '{target_id}'"
 
@@ -130,10 +130,14 @@
                       print("Error: Target log file not found.")
                       return
                       
-                  print(f"--- STARTING LIVE STREAM (120s) for {target_id} ---")
-                  print(f"--- Source: {file_path} ---")
-                  cmd = f"timeout 120s stdbuf -oL tail -f {file_path}{grep_filter}"
-                  subprocess.run(cmd, shell=True)
+                  print(f"--- STARTING BATCH COLLECTION (120s) for {target_id} ---")
+                  # We use a 120s timeout then print the result at the end to avoid streaming lag
+                  cmd = f"timeout 120s stdbuf -oL tail -f {file_path}{grep_filter} | tail -n 200"
+                  try:
+                      result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=130)
+                      print(result.stdout if result.stdout else "No live activity captured in this 2-minute window.")
+                  except subprocess.TimeoutExpired:
+                      print("Live stream session ended.")
 
           if __name__ == "__main__":
               run_diagnostic()
@@ -150,4 +154,3 @@
     - name: "Output: Present Diagnostic Findings"
       debug:
           msg: "{{ hunter_output.stdout_lines }}"
-      when: ACTION != "Tail Live" and ACTION != "Tail JSON"

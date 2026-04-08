@@ -408,11 +408,9 @@ def collect_json():
         return redirect(url_for('dashboard'))
 
     if selected_file == 'all':
-        patterns = " ".join([f"{d}/*.log" for d in (LOG_DIRS + JSON_LOG_DIRS)])
+        file_path = f"{JSON_LOG_DIRS[0]}/*.log"
     else:
-        patterns = " ".join([f"{d}/{selected_file}" for d in (LOG_DIRS + JSON_LOG_DIRS)])
-
-    file_path = f"{JSON_LOG_DIRS[0]}/{selected_file}"
+        file_path = f"{JSON_LOG_DIRS[0]}/{selected_file}"
     search_script = f'''import sys,json;d=__import__("datetime");s={start_ts};e={end_ts};t=None
 for l in sys.stdin:
  x=l.strip()
@@ -424,7 +422,7 @@ for l in sys.stdin:
    for o in json.loads(x):print(json.dumps(o))
   except:pass'''
     
-    search_cmd = f"python3 -c '{search_script}' {file_path}"
+    search_cmd = f"cat {file_path} | python3 -c '{search_script}'"
     
     out, err = execute_ssh(search_cmd, timeout=60)
     
