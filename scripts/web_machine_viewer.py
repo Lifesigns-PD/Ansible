@@ -39,11 +39,12 @@ TAILSCALE_API_KEY = os.getenv("Tailscale-tailnet-apikey")
 TAILSCALE_TENANT_NAME = os.getenv("Tailscale-tailnet-name")
 
 def parse_datetime_to_epoch(dt_str):
-    try:
-        dt = datetime.strptime(dt_str, "%Y-%m-%dT%H:%M")
-        return int(dt.timestamp())
-    except Exception:
-        return None
+    if not dt_str: return None
+    for fmt in ["%d-%m-%Y %H:%M", "%Y-%m-%dT%H:%M", "%d-%m-%YT%H:%M"]:
+        try:
+            return int(datetime.strptime(dt_str, fmt).timestamp())
+        except: pass
+    return None
 
 active_ssh_sessions = {}
 
@@ -329,7 +330,7 @@ def dashboard():
                 <div class="pt-6 border-t border-slate-700">
                     <h4 class="text-sm font-bold mb-3 text-emerald-400">📥 Download JSON Data by Time</h4>
                     <p class="text-[10px] text-slate-500 mb-3">Searches the <code class="bg-black p-0.5 rounded text-emerald-500 font-mono">timestamp1</code> field.</p>
-                    <button type="button" onclick="runCmd('echo === First/Last timestamps ===; grep -m1 \"======\" /opt/go-ble-orchestrator/logs/json_logs/04_E3_E5_DC_E8_96.log | grep -oP \"\\d{{4}}-\\d{{2}}-\\d{{2}}\\s+\\d{{2}}:\\d{{2}}:\\d{{2}}\"; tail -50 /opt/go-ble-orchestrator/logs/json_logs/04_E3_E5_DC_E8_96.log | grep -m1 \"======\" | grep -oP \"\\d{{4}}-\\d{{2}}-\\d{{2}}\\s+\\d{{2}}:\\d{{2}}:\\d{{2}}\"')" class="w-full bg-slate-800 hover:bg-slate-700 text-xs py-2 rounded mb-3 border border-slate-600">🔍 Debug: timestamp1 Range</button>
+                    <button type="button" onclick="runCmd('echo === File Info ===; ls -la /opt/go-ble-orchestrator/logs/json_logs/04_E3_E5_DC_E8_96.log; echo === First 5 Lines ===; cat /opt/go-ble-orchestrator/logs/json_logs/04_E3_E5_DC_E8_96.log | head -5')" class="w-full bg-slate-800 hover:bg-slate-700 text-xs py-2 rounded mb-3 border border-slate-600">🔍 Debug: File Info</button>
                     <form action="/api/collect_json" method="POST" class="space-y-3">
                         <div>
                             <label class="block text-[10px] uppercase font-bold text-slate-500 mb-1">Select File</label>
@@ -411,42 +412,52 @@ def collect_json():
     else:
         patterns = " ".join([f"{d}/{selected_file}" for d in (LOG_DIRS + JSON_LOG_DIRS)])
 
-    search_script = f"""
-import sys, json, re
+    search_script = f'''python3 << 'PYEOF'
+import sys, json
 from datetime import datetime
 start_ts = {start_ts}
 end_ts = {end_ts}
-in_range = False
+current_ts = None
 for line in sys.stdin:
     stripped = line.strip()
-    if stripped.startswith('==========') and '----------' not in stripped:
-        parts = stripped.split('==========')
-        if len(parts) >= 2:
-            ts_str = parts[1].strip()
-            in_range = False
-            try:
-                if '.' in ts_str:
-                    file_ts = int(datetime.strptime(ts_str, '%Y-%m-%d %H:%M:%S.%f').timestamp())
-                else:
-                    file_ts = int(datetime.strptime(ts_str, '%Y-%m-%d %H:%M:%S').timestamp())
-                if start_ts <= file_ts <= end_ts:
-                    in_range = True
-            except Exception as e:
-                pass
-    elif in_range and stripped.startswith('['):
+    if stripped.startswith('=========='):
+        try:
+            ts_str = stripped.split('==========')[1].strip()
+            current_ts = int(datetime.strptime(ts_str, '%Y-%m-%d %H:%M:%S.%f').timestamp())
+        except:
+            current_ts = None
+    elif stripped.startswith('[') and current_ts and start_ts <= current_ts <= end_ts:
         try:
             for obj in json.loads(stripped):
                 print(json.dumps(obj))
         except:
             pass
-"""
+PYEOF'''
     
-    search_cmd = f"cat {patterns} 2>/dev/null | python3 -c {repr(search_script)}"
+    search_cmd = f"cat {patterns} 2>/dev/null | {search_script}"
     
     out, err = execute_ssh(search_cmd, timeout=60)
     
     if not out or not out.strip():
-        flash(f"No data found for {selected_file} between {start_ts}-{end_ts}.")
+        debug_script = f'''python3 << 'PYEOF'
+import sys, json
+from datetime import datetime
+start_ts = {start_ts}
+end_ts = {end_ts}
+first_line = None
+ts_lines = []
+for line in sys.stdin:
+    stripped = line.strip()
+    if first_line is None: first_line = repr(stripped[:100])
+    if '==========' in stripped:
+        ts_lines.append(repr(stripped[:100]))
+    if len(ts_lines) >= 3: break
+print("first_line=" + str(first_line))
+print("ts_samples=" + str(ts_lines))
+PYEOF'''
+        debug_cmd = f"cat {patterns} 2>/dev/null | {debug_script}"
+        debug_out, _ = execute_ssh(debug_cmd, timeout=30)
+        flash(f"Debug: {debug_out[:400] if debug_out else 'no output'}")
         return redirect(url_for('dashboard'))
 
     file_label = selected_file.replace('.log', '') if selected_file != 'all' else 'all'

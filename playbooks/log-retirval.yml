@@ -28,23 +28,29 @@
                       res = subprocess.run(["date", "-d", dt_str, "+%s"], capture_output=True, text=True)
                       return int(res.stdout.strip()) if res.returncode == 0 else None
 
-          def find_file(filename):
-              mapping = {
-                  "info": "app.log",
-                  "app": "app.log",
-                  "mqtt": "mqtt-status.log",
-                  "sys": "sys-perf.log",
-                  "stats": "stats_5s.log"
-              }
-              base_name = filename.lower().replace(".log", "")
-              actual_filename = mapping.get(base_name, filename)
-              
-              paths = ["/opt/go-ble-orchestrator", "/opt/go-ble-orchestrator/logs"]
-              for p in paths:
-                  full_path = Path(p) / actual_filename
-                  if full_path.exists():
-                      return str(full_path)
-              return None
+          def find_file_path(pattern):
+              """Find a file matching a pattern anywhere in the orchestrator path."""
+              base = "/opt/go-ble-orchestrator"
+              # Check specific known locations first for speed
+              direct_paths = [
+                  f"{base}/logs/json_logs/{pattern}",
+                  f"{base}/json_logs/{pattern}",
+                  f"{base}/logs/{pattern}",
+                  f"{base}/{pattern}"
+              ]
+              for p in direct_paths:
+                  if os.path.exists(p): return p
+                  
+              # Fallback to broad find
+              cmd = f"find {base} -name '{pattern}' -type f | head -n 1"
+              res = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+              return res.stdout.strip()
+
+          def find_app_log():
+              for name in ["app.log", "logs/app.log"]:
+                  path = Path("/opt/go-ble-orchestrator") / name
+                  if path.exists(): return str(path)
+              return find_file_path("app.log")
 
           def run_diagnostic():
               action = os.getenv("ACTION", "Grep Info")
@@ -55,56 +61,51 @@
                   print("Error: No Device ID provided.")
                   return
 
+              # Standardize search strings
+              mac_colons = target_id.replace("_", ":").upper()
+              mac_underscores = target_id.replace(":", "_").lower()
+
               if "Grep" in action:
+                  log_map = {"info": "app.log", "mqtt": "mqtt-status.log", "sys": "sys-perf.log", "stats": "stats_5s.log"}
                   parts = action.split(" ")
-                  log_filename = parts[1] if len(parts) > 1 else "app.log"
-                  file_path = find_file(log_filename)
+                  base_request = parts[1].lower() if len(parts) > 1 else "app.log"
+                  target_file = log_map.get(base_request, base_request)
+                  
+                  file_path = find_file_path(target_file) if target_file != "app.log" else find_app_log()
+                  
                   if not file_path:
-                      print(f"Error: Could not locate log file for '{log_filename}'")
+                      print(f"Error: Could not locate log file '{target_file}'")
                       return
 
-                  mac_colons = target_id.replace("_", ":").upper()
-                  print(f"--- Searching {os.path.basename(file_path)} for [{mac_colons}] ---")
-                  # -F = Fixed strings (handles colons better), -a = text mode
-                  # Increased tail to 500k to ensure we find data in large 2.4GB files
-                  cmd = f"tail -n 500000 {file_path} | grep -iaF '{mac_colons}' | tail -n 50"
+                  print(f"--- Searching {file_path} for [{mac_colons}] ---")
+                  cmd = f"tail -c 100M {file_path} | grep -iaF '{mac_colons}' | tail -n 50"
                   sys.stdout.flush()
                   subprocess.run(cmd, shell=True)
 
               elif action == "Search JSON":
-                  mac_underscores = target_id.replace(":", "_").lower()
                   start_ts = parse_time_to_epoch(start_time_str)
+                  file_name = f"{mac_underscores}.log"
+                  file_path = find_file_path(file_name)
                   
-                  json_dir = None
-                  possible_dirs = ["/opt/go-ble-orchestrator/json_logs", "/opt/go-ble-orchestrator/logs/json_logs"]
-                  for d in possible_dirs:
-                      if os.path.isdir(d):
-                          json_dir = d
-                          break
-                  
-                  if not json_dir:
-                      print("Error: 'json_logs' directory not found.")
-                      return
-
-                  file_path = Path(json_dir) / f"{mac_underscores}.log"
-                  
-                  if file_path.exists():
-                      print(f"--- Extracting {mac_underscores}.log from Epoch {start_ts} ---")
-                      # Clean the first column to ensure it's numeric before comparing
-                      awk_cmd = f"awk -v ts={start_ts} '{{ gsub(/[^0-9]/, \"\", $1); if ($1 >= ts) print $0 }}' {file_path} | tail -n 100"
+                  if file_path and os.path.exists(file_path):
+                      print(f"--- Extracting from: {file_path} ---")
+                      print(f"--- Filters: Timestamp >= {start_ts} ---")
+                      # AWK handles both raw numbers and [brackets]
+                      awk_cmd = f"awk -v ts={start_ts} '{{ split($1, a, \"[\"); split(a[length(a)], b, \"]\"); val=b[1]; if (val == \"\") val=$1; if (val >= ts) print $0 }}' {file_path} | tail -n 100"
                       sys.stdout.flush()
                       subprocess.run(awk_cmd, shell=True)
                   else:
-                      print(f"File NOT FOUND: {file_path}")
-                      print(f"Recent files in {json_dir}:")
-                      subprocess.run(f"ls -t {json_dir} | head -n 10", shell=True)
+                      print(f"CRITICAL: Log file {file_name} not found.")
+                      print("DIAGNOSTIC: Checking directory permissions and contents...")
+                      json_dir = "/opt/go-ble-orchestrator/logs/json_logs"
+                      subprocess.run(f"ls -ld {json_dir}", shell=True)
+                      subprocess.run(f"ls -t {json_dir} | head -n 5", shell=True)
 
               elif action == "Tail Live":
-                  file_path = find_file("app.log")
+                  file_path = find_app_log()
                   if not file_path:
                       print("Error: app.log not found.")
                       return
-                  mac_colons = target_id.replace("_", ":").upper()
                   print(f"--- Starting 60s Live Tail for {mac_colons} ---")
                   cmd = f"timeout 60s stdbuf -oL tail -f {file_path} | grep --line-buffered -iaF '{mac_colons}'"
                   sys.stdout.flush()
