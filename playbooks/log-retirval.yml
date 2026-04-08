@@ -79,7 +79,8 @@
                       return
 
                   print(f"--- Searching {file_path} for [{mac_colons}] ---")
-                  cmd = f"tail -c 100M {file_path} | grep -iaF '{mac_colons}' | tail -n 50"
+                  # Increased final tail to 2000 lines to provide "the whole" context
+                  cmd = f"tail -c 200M {file_path} | grep -iaF '{mac_colons}' | tail -n 2000"
                   sys.stdout.flush()
                   subprocess.run(cmd, shell=True)
 
@@ -93,8 +94,8 @@
                   if file_path and os.path.exists(file_path):
                       print(f"--- Extracting from: {file_path} ---")
                       print(f"--- Filters: Timestamp >= {start_ts} ---")
-                      # AWK robustly extracts the first column regardless of format
-                      awk_cmd = f"awk -v ts={start_ts} '{{ split($1, a, \"[\"); split(a[length(a)], b, \"]\"); val=b[1]; if (val == \"\") val=$1; if (val >= ts) print $0 }}' {file_path} | tail -n 100"
+                      # AWK robustly extracts the first column. Limits increased to 2000 lines.
+                      awk_cmd = f"awk -v ts={start_ts} '{{ split($1, a, \"[\"); split(a[length(a)], b, \"]\"); val=b[1]; if (val == \"\") val=$1; if (val >= ts) print $0 }}' {file_path} | tail -n 2000"
                       sys.stdout.flush()
                       subprocess.run(awk_cmd, shell=True)
                   else:
