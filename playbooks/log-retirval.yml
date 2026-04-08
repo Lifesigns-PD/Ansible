@@ -8,6 +8,7 @@
         dest: /tmp/log_hunter_cli.py
         mode: '0755'
         content: |
+          {% raw %}
           #!/usr/bin/env python3
           import os
           import subprocess
@@ -31,23 +32,23 @@
           def find_file_path(pattern):
               """Find a file matching a pattern anywhere in the orchestrator path."""
               base = "/opt/go-ble-orchestrator"
-              # Check specific known locations first for speed
+              # Priority search in /logs/ and /logs/json_logs/
               direct_paths = [
                   f"{base}/logs/json_logs/{pattern}",
-                  f"{base}/json_logs/{pattern}",
                   f"{base}/logs/{pattern}",
+                  f"{base}/json_logs/{pattern}",
                   f"{base}/{pattern}"
               ]
               for p in direct_paths:
                   if os.path.exists(p): return p
                   
-              # Fallback to broad find
+              # Fallback to system-level find
               cmd = f"find {base} -name '{pattern}' -type f | head -n 1"
               res = subprocess.run(cmd, shell=True, capture_output=True, text=True)
               return res.stdout.strip()
 
           def find_app_log():
-              for name in ["app.log", "logs/app.log"]:
+              for name in ["logs/app.log", "app.log"]:
                   path = Path("/opt/go-ble-orchestrator") / name
                   if path.exists(): return str(path)
               return find_file_path("app.log")
@@ -63,7 +64,7 @@
 
               # Standardize search strings
               mac_colons = target_id.replace("_", ":").upper()
-              mac_underscores = target_id.replace(":", "_").lower()
+              mac_underscores = target_id.replace(":", "_")
 
               if "Grep" in action:
                   log_map = {"info": "app.log", "mqtt": "mqtt-status.log", "sys": "sys-perf.log", "stats": "stats_5s.log"}
@@ -71,7 +72,7 @@
                   base_request = parts[1].lower() if len(parts) > 1 else "app.log"
                   target_file = log_map.get(base_request, base_request)
                   
-                  file_path = find_file_path(target_file) if target_file != "app.log" else find_app_log()
+                  file_path = find_app_log() if target_file == "app.log" else find_file_path(target_file)
                   
                   if not file_path:
                       print(f"Error: Could not locate log file '{target_file}'")
@@ -84,22 +85,26 @@
 
               elif action == "Search JSON":
                   start_ts = parse_time_to_epoch(start_time_str)
+                  
+                  # Try exact match, uppercase match, and lowercase match for the .log file
                   file_name = f"{mac_underscores}.log"
-                  file_path = find_file_path(file_name)
+                  file_path = find_file_path(file_name) or find_file_path(file_name.upper()) or find_file_path(file_name.lower())
                   
                   if file_path and os.path.exists(file_path):
                       print(f"--- Extracting from: {file_path} ---")
                       print(f"--- Filters: Timestamp >= {start_ts} ---")
-                      # AWK handles both raw numbers and [brackets]
+                      # AWK robustly extracts the first column regardless of format
                       awk_cmd = f"awk -v ts={start_ts} '{{ split($1, a, \"[\"); split(a[length(a)], b, \"]\"); val=b[1]; if (val == \"\") val=$1; if (val >= ts) print $0 }}' {file_path} | tail -n 100"
                       sys.stdout.flush()
                       subprocess.run(awk_cmd, shell=True)
                   else:
-                      print(f"CRITICAL: Log file {file_name} not found.")
-                      print("DIAGNOSTIC: Checking directory permissions and contents...")
+                      print(f"CRITICAL: Log file for {target_id} not found.")
+                      print("DIAGNOSTIC: Listing contents of /opt/go-ble-orchestrator/logs/json_logs/")
                       json_dir = "/opt/go-ble-orchestrator/logs/json_logs"
-                      subprocess.run(f"ls -ld {json_dir}", shell=True)
-                      subprocess.run(f"ls -t {json_dir} | head -n 5", shell=True)
+                      if os.path.isdir(json_dir):
+                          subprocess.run(f"ls -t {json_dir} | head -n 10", shell=True)
+                      else:
+                          print(f"Directory {json_dir} does not exist.")
 
               elif action == "Tail Live":
                   file_path = find_app_log()
@@ -113,6 +118,7 @@
 
           if __name__ == "__main__":
               run_diagnostic()
+          {% endraw %}
 
     - name: "Execution: Trigger Diagnostic Logic"
       shell: "python3 /tmp/log_hunter_cli.py"
