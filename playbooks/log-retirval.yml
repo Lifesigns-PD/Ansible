@@ -68,6 +68,7 @@
               # Standardize search strings
               mac_colons = target_id.replace("_", ":").upper()
               mac_underscores = target_id.replace(":", "_")
+              start_ts = parse_time_to_epoch(start_time_str)
 
               if "Grep" in action:
                   log_map = {"info": "app.log", "mqtt": "mqtt-status.log", "sys": "sys-perf.log", "stats": "stats_5s.log"}
@@ -81,26 +82,35 @@
                       print(f"Error: Could not locate log file '{target_file}'")
                       return
 
-                  print(f"--- Searching {file_path} for [{mac_colons}] ---")
+                  # Prepare timestamp strings for string comparison in awk
+                  start_dt = datetime.fromtimestamp(start_ts)
+                  ts_slash = start_dt.strftime("%Y/%m/%d %H:%M:%S")
+                  ts_dash = start_dt.strftime("%Y-%m-%d %H:%M:%S")
+
+                  print(f"--- Searching {file_path} for [{mac_colons}] since {start_time_str} ---")
                   sys.stdout.flush()
-                  # Use a shell-level timeout to prevent hanging on massive files
-                  # tail -c 150M is a safe middle ground between depth and speed
-                  cmd = f"timeout 45s tail -c 150M {file_path} | grep -iaF '{mac_colons}' | tail -n 2000"
+                  
+                  # Optimized: tail a large chunk (500MB), then use awk to filter by both MAC and Time
+                  # This ensures we only get the last hour of logs for that specific device.
+                  cmd = (
+                      f"timeout 45s tail -c 500M {file_path} | "
+                      f"awk -v t1='{ts_slash}' -v t2='{ts_dash}' -v mac='{mac_colons}' "
+                      "'{ if ($0 ~ mac && ($1 \" \" $2 >= t1 || $1 \" \" $2 >= t2)) print $0 }' | "
+                      "tail -n 2000"
+                  )
                   try:
                       subprocess.run(cmd, shell=True, timeout=50)
                   except subprocess.TimeoutExpired:
-                      print("Search timed out after 50 seconds. The log file may be too large or disk I/O is slow.")
+                      print("Search timed out. The log file may be too dense or disk I/O is slow.")
 
               elif action == "Search JSON":
-                  start_ts = parse_time_to_epoch(start_time_str)
-                  
                   # Try exact match, uppercase match, and lowercase match for the .log file
                   file_name = f"{mac_underscores}.log"
                   file_path = find_file_path(file_name) or find_file_path(file_name.upper()) or find_file_path(file_name.lower())
                   
                   if file_path and os.path.exists(file_path):
                       print(f"--- Extracting from: {file_path} ---")
-                      print(f"--- Filters: Timestamp >= {start_ts} ---")
+                      print(f"--- Filters: Timestamp >= {start_ts} (Since {start_time_str}) ---")
                       # AWK robustly extracts the first column. Added timeout for safety.
                       awk_cmd = f"timeout 45s awk -v ts={start_ts} '{{ split($1, a, \"[\"); split(a[length(a)], b, \"]\"); val=b[1]; if (val == \"\") val=$1; if (val >= ts) print $0 }}' {file_path} | tail -n 2000"
                       sys.stdout.flush()
@@ -123,7 +133,6 @@
                       print("Error: app.log not found.")
                       return
                   print(f"--- Starting 60s Live Tail for {mac_colons} ---")
-                  # timeout handles the exit for us
                   cmd = f"timeout 60s stdbuf -oL tail -f {file_path} | grep --line-buffered -iaF '{mac_colons}'"
                   sys.stdout.flush()
                   subprocess.run(cmd, shell=True)
