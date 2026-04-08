@@ -44,8 +44,11 @@
                   
               # Fallback to system-level find
               cmd = f"find {base} -name '{pattern}' -type f | head -n 1"
-              res = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-              return res.stdout.strip()
+              try:
+                  res = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=10)
+                  return res.stdout.strip()
+              except:
+                  return ""
 
           def find_app_log():
               for name in ["logs/app.log", "app.log"]:
@@ -79,10 +82,14 @@
                       return
 
                   print(f"--- Searching {file_path} for [{mac_colons}] ---")
-                  # Increased final tail to 2000 lines to provide "the whole" context
-                  cmd = f"tail -c 200M {file_path} | grep -iaF '{mac_colons}' | tail -n 2000"
                   sys.stdout.flush()
-                  subprocess.run(cmd, shell=True)
+                  # Use a shell-level timeout to prevent hanging on massive files
+                  # tail -c 150M is a safe middle ground between depth and speed
+                  cmd = f"timeout 45s tail -c 150M {file_path} | grep -iaF '{mac_colons}' | tail -n 2000"
+                  try:
+                      subprocess.run(cmd, shell=True, timeout=50)
+                  except subprocess.TimeoutExpired:
+                      print("Search timed out after 50 seconds. The log file may be too large or disk I/O is slow.")
 
               elif action == "Search JSON":
                   start_ts = parse_time_to_epoch(start_time_str)
@@ -94,10 +101,13 @@
                   if file_path and os.path.exists(file_path):
                       print(f"--- Extracting from: {file_path} ---")
                       print(f"--- Filters: Timestamp >= {start_ts} ---")
-                      # AWK robustly extracts the first column. Limits increased to 2000 lines.
-                      awk_cmd = f"awk -v ts={start_ts} '{{ split($1, a, \"[\"); split(a[length(a)], b, \"]\"); val=b[1]; if (val == \"\") val=$1; if (val >= ts) print $0 }}' {file_path} | tail -n 2000"
+                      # AWK robustly extracts the first column. Added timeout for safety.
+                      awk_cmd = f"timeout 45s awk -v ts={start_ts} '{{ split($1, a, \"[\"); split(a[length(a)], b, \"]\"); val=b[1]; if (val == \"\") val=$1; if (val >= ts) print $0 }}' {file_path} | tail -n 2000"
                       sys.stdout.flush()
-                      subprocess.run(awk_cmd, shell=True)
+                      try:
+                          subprocess.run(awk_cmd, shell=True, timeout=50)
+                      except subprocess.TimeoutExpired:
+                          print("Data extraction timed out.")
                   else:
                       print(f"CRITICAL: Log file for {target_id} not found.")
                       print("DIAGNOSTIC: Listing contents of /opt/go-ble-orchestrator/logs/json_logs/")
@@ -113,6 +123,7 @@
                       print("Error: app.log not found.")
                       return
                   print(f"--- Starting 60s Live Tail for {mac_colons} ---")
+                  # timeout handles the exit for us
                   cmd = f"timeout 60s stdbuf -oL tail -f {file_path} | grep --line-buffered -iaF '{mac_colons}'"
                   sys.stdout.flush()
                   subprocess.run(cmd, shell=True)
