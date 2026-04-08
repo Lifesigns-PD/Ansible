@@ -30,9 +30,7 @@
                       return int(res.stdout.strip()) if res.returncode == 0 else None
 
           def find_file_path(pattern):
-              """Find a file matching a pattern anywhere in the orchestrator path."""
               base = "/opt/go-ble-orchestrator"
-              # Priority search in /logs/ and /logs/json_logs/
               direct_paths = [
                   f"{base}/logs/json_logs/{pattern}",
                   f"{base}/logs/{pattern}",
@@ -41,8 +39,6 @@
               ]
               for p in direct_paths:
                   if os.path.exists(p): return p
-                  
-              # Fallback to system-level find
               cmd = f"find {base} -name '{pattern}' -type f | head -n 1"
               try:
                   res = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=10)
@@ -65,8 +61,6 @@
                   print("Error: No Device ID provided.")
                   return
 
-              # Standardize search strings
-              mac_colons = target_id.replace("_", ":").upper()
               mac_underscores = target_id.replace(":", "_")
               start_ts = parse_time_to_epoch(start_time_str)
 
@@ -75,68 +69,63 @@
                   parts = action.split(" ")
                   base_request = parts[1].lower() if len(parts) > 1 else "app.log"
                   target_file = log_map.get(base_request, base_request)
-                  
                   file_path = find_app_log() if target_file == "app.log" else find_file_path(target_file)
                   
                   if not file_path:
                       print(f"Error: Could not locate log file '{target_file}'")
                       return
 
-                  # Prepare timestamp strings for string comparison in awk
                   start_dt = datetime.fromtimestamp(start_ts)
                   ts_slash = start_dt.strftime("%Y/%m/%d %H:%M:%S")
                   ts_dash = start_dt.strftime("%Y-%m-%d %H:%M:%S")
 
-                  print(f"--- Searching {file_path} for [{target_id}] since {start_time_str} ---")
-                  sys.stdout.flush()
+                  print(f"--- FETCHING DATA: {file_path} for [{target_id}] ---")
+                  print(f"--- PERIOD: Since {start_time_str} ({ts_dash}) ---")
                   
-                  # OPTIMIZATION: Grep the MAC/Name FIRST to reduce data volume before AWK processing
-                  # Seeking 300MB back is fast and covers ~1-2 hours of even heavy logs.
+                  # BATCH MODE: We capture the output and print it all at once at the end
+                  # Seeking 400MB is safer for a 2.4GB file to ensure 1 hour of coverage
                   cmd = (
-                      f"timeout 80s tail -c 300M {file_path} | "
+                      f"tail -c 400M {file_path} | "
                       f"grep -iaF '{target_id}' | "
                       f"awk -v t1='{ts_slash}' -v t2='{ts_dash}' "
                       "'{ if ($1 \" \" $2 >= t1 || $1 \" \" $2 >= t2) print $0 }' | "
-                      "tail -n 2000"
+                      "tail -n 3000"
                   )
+                  
                   try:
-                      subprocess.run(cmd, shell=True, timeout=90)
+                      # Capture output instead of streaming to avoid buffer hangs
+                      result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=120)
+                      if result.stdout:
+                          print(result.stdout)
+                      else:
+                          print("No log entries found for this device in the specified time range.")
                   except subprocess.TimeoutExpired:
-                      print("Search timed out. The log file is extremely dense.")
+                      print("ERROR: Process timed out. The log file is too large to process in this window.")
 
               elif action == "Search JSON":
-                  # Try exact match, uppercase match, and lowercase match for the .log file
                   file_name = f"{mac_underscores}.log"
                   file_path = find_file_path(file_name) or find_file_path(file_name.upper()) or find_file_path(file_name.lower())
                   
                   if file_path and os.path.exists(file_path):
-                      print(f"--- Extracting from: {file_path} ---")
-                      print(f"--- Filters: Timestamp >= {start_ts} (Since {start_time_str}) ---")
-                      # AWK robustly extracts the first column.
-                      awk_cmd = f"timeout 80s awk -v ts={start_ts} '{{ split($1, a, \"[\"); split(a[length(a)], b, \"]\"); val=b[1]; if (val == \"\") val=$1; if (val >= ts) print $0 }}' {file_path} | tail -n 2000"
-                      sys.stdout.flush()
+                      print(f"--- FETCHING JSON DATA: {file_path} ---")
+                      awk_cmd = f"awk -v ts={start_ts} '{{ split($1, a, \"[\"); split(a[length(a)], b, \"]\"); val=b[1]; if (val == \"\") val=$1; if (val >= ts) print $0 }}' {file_path} | tail -n 3000"
+                      
                       try:
-                          subprocess.run(awk_cmd, shell=True, timeout=90)
+                          result = subprocess.run(awk_cmd, shell=True, capture_output=True, text=True, timeout=120)
+                          print(result.stdout if result.stdout else "No JSON records found for this time range.")
                       except subprocess.TimeoutExpired:
-                          print("Data extraction timed out.")
+                          print("ERROR: JSON extraction timed out.")
                   else:
-                      print(f"CRITICAL: Log file for {target_id} not found.")
-                      print("DIAGNOSTIC: Listing contents of /opt/go-ble-orchestrator/logs/json_logs/")
-                      json_dir = "/opt/go-ble-orchestrator/logs/json_logs"
-                      if os.path.isdir(json_dir):
-                          subprocess.run(f"ls -t {json_dir} | head -n 10", shell=True)
-                      else:
-                          print(f"Directory {json_dir} does not exist.")
+                      print(f"CRITICAL: Device log {file_name} not found.")
 
               elif action == "Tail Live":
                   file_path = find_app_log()
                   if not file_path:
                       print("Error: app.log not found.")
                       return
-                  # Increased live tail to 300s (5 minutes) so it doesn't stop too early
-                  print(f"--- Starting 300s Live Tail for {target_id} ---")
+                  print(f"--- STARTING LIVE STREAM (300s) for {target_id} ---")
+                  # Live tail still uses streaming but with unbuffered grep
                   cmd = f"timeout 300s stdbuf -oL tail -f {file_path} | grep --line-buffered -iaF '{target_id}'"
-                  sys.stdout.flush()
                   subprocess.run(cmd, shell=True)
 
           if __name__ == "__main__":
@@ -153,5 +142,5 @@
 
     - name: "Output: Present Diagnostic Findings"
       debug:
-        msg: "{{ hunter_output.stdout_lines }}"
+          msg: "{{ hunter_output.stdout_lines }}"
       when: ACTION != "Tail Live"
