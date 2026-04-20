@@ -1,7 +1,7 @@
 ---
 - name: Update orchestrator API endpoints and restart service
   hosts: all
-  become: yes
+  become: "{{ ansible_user != 'root' }}"
   gather_facts: no
 
   vars:
