@@ -1,0 +1,122 @@
+---
+- name: Update orchestrator API endpoints and restart service
+  hosts: all
+  become: yes
+  gather_facts: no
+
+  vars:
+    service_name: "go-ble-orchestrator"
+    config_path: "/opt/go-ble-orchestrator/config.json"
+
+  tasks:
+    - name: Ensure at least one endpoint or env override was provided
+      assert:
+        that:
+          - >
+            prod_endpoint is defined or
+            qa_endpoint is defined or
+            dev_endpoint is defined or
+            local_endpoint is defined or
+            orchestrator_env is defined
+        fail_msg: >-
+          Provide at least one of: prod_endpoint, qa_endpoint, dev_endpoint,
+          local_endpoint, orchestrator_env.
+
+    - name: Check if orchestrator config exists
+      stat:
+        path: "{{ config_path }}"
+      register: orchestrator_config_stat
+
+    - name: Fail if orchestrator config is missing
+      fail:
+        msg: "Config file not found at {{ config_path }}"
+      when: not orchestrator_config_stat.stat.exists
+
+    - name: Read current orchestrator config
+      slurp:
+        path: "{{ config_path }}"
+      register: orchestrator_config_raw
+
+    - name: Parse current orchestrator config
+      set_fact:
+        current_config: "{{ orchestrator_config_raw.content | b64decode | from_json }}"
+
+    - name: Build endpoint override map
+      set_fact:
+        endpoint_overrides: >-
+          {{
+            {}
+            | combine({'prod': prod_endpoint} if prod_endpoint is defined else {})
+            | combine({'qa': qa_endpoint} if qa_endpoint is defined else {})
+            | combine({'dev': dev_endpoint} if dev_endpoint is defined else {})
+            | combine({'local': local_endpoint} if local_endpoint is defined else {})
+          }}
+
+    - name: Merge updated endpoints into current config
+      set_fact:
+        updated_config: >-
+          {{
+            current_config
+            | combine(
+                {
+                  'endpoints': (
+                    current_config.endpoints | default({}) | combine(endpoint_overrides, recursive=True)
+                  )
+                },
+                recursive=True
+              )
+          }}
+
+    - name: Update active environment if requested
+      set_fact:
+        updated_config: "{{ updated_config | combine({'env': orchestrator_env}, recursive=True) }}"
+      when: orchestrator_env is defined
+
+    - name: Ensure requested environment exists in endpoints
+      assert:
+        that:
+          - updated_config.endpoints[updated_config.env] is defined
+        fail_msg: >-
+          The selected env '{{ updated_config.env }}' does not exist in the endpoints map.
+      when: updated_config.env is defined
+
+    - name: Stop orchestrator service before rewriting config
+      systemd:
+        name: "{{ service_name }}"
+        state: stopped
+      ignore_errors: yes
+
+    - name: Back up current orchestrator config
+      copy:
+        src: "{{ config_path }}"
+        dest: "{{ config_path }}.backup"
+        remote_src: yes
+        mode: preserve
+
+    - name: Write updated orchestrator config
+      copy:
+        dest: "{{ config_path }}"
+        content: "{{ updated_config | to_nice_json }}"
+        mode: "0644"
+
+    - name: Start orchestrator service with updated config
+      systemd:
+        name: "{{ service_name }}"
+        state: started
+        enabled: yes
+
+    - name: Check orchestrator service status
+      shell: systemctl is-active "{{ service_name }}"
+      register: orchestrator_service_status
+      changed_when: false
+      failed_when: orchestrator_service_status.stdout != "active"
+
+    - name: Show endpoint update summary
+      debug:
+        msg: |
+          Updated {{ inventory_hostname }}
+          Active env: {{ updated_config.env }}
+          Prod: {{ updated_config.endpoints.prod | default('not set') }}
+          QA: {{ updated_config.endpoints.qa | default('not set') }}
+          Dev: {{ updated_config.endpoints.dev | default('not set') }}
+          Local: {{ updated_config.endpoints.local | default('not set') }}
