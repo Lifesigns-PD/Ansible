@@ -1,6 +1,6 @@
 ---
 # deploy.yml
-# Surgical fix for 203/EXEC and pathing errors.
+# Surgical fix for 203/EXEC, pathing errors, and release-fetching logic.
 
 - name: Deploy BLE Orchestrator + Gateway Dashboard Natively
   hosts: all
@@ -17,12 +17,15 @@
     gateway_service_file: "/etc/systemd/system/gateway-dashboard.service"
     orchestrator_service_file: "/etc/systemd/system/go-ble-orchestrator.service"
     backup_dir: "/opt/backups"
+    # Added /releases (instead of /releases/latest) can sometimes help if "latest" is cached or pointing to a non-draft pre-release
     repo_api_url: "https://api.github.com/repos/Lifesigns-PD/orchestrator-releases/releases/latest"
     gateway_repo_api_url: "https://api.github.com/repos/PD-dev-2025/gateway-dashboard-release/releases/latest"
 
   tasks:
 
-    # --- STEPS 1-5 remain exactly as you have them ---
+    # ─────────────────────────────────────────────
+    # STEP 1: OS & PERMISSION CHECKS
+    # ─────────────────────────────────────────────
 
     - name: "[1/9] Assert OS is Ubuntu 22.04+"
       assert:
@@ -36,6 +39,10 @@
       changed_when: false
       failed_when: whoami_result.stdout != 'root'
 
+    # ─────────────────────────────────────────────
+    # STEP 2: SILENT PREREQUISITE INSTALLATION
+    # ─────────────────────────────────────────────
+
     - name: "[2/9] Cleanup apt locks and install core tools"
       shell: |
         for lock in /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock /var/lib/apt/lists/lock; do
@@ -47,6 +54,10 @@
         apt-get update
         DEBIAN_FRONTEND=noninteractive apt-get install -y curl unzip zip sudo ansible python3-apt
       changed_when: true
+
+    # ─────────────────────────────────────────────
+    # STEP 3: BACKUP
+    # ─────────────────────────────────────────────
 
     - name: "[3/9] Create backup directory"
       file:
@@ -63,6 +74,10 @@
         fi
       changed_when: false
 
+    # ─────────────────────────────────────────────
+    # STEP 4: STOP OLD SERVICES
+    # ─────────────────────────────────────────────
+
     - name: "[4/9] Stop and remove old services safely"
       shell: |
         for svc in "{{ service_name }}" "{{ gateway_service_name }}"; do
@@ -76,6 +91,10 @@
         rm -rf "{{ install_dir }}"
         rm -rf "{{ gateway_install_dir }}"
       changed_when: true
+
+    # ─────────────────────────────────────────────
+    # STEP 5: TEMP WORKING DIR
+    # ─────────────────────────────────────────────
 
     - name: "[5/9] Create temp working directory"
       shell: mktemp -d
@@ -93,14 +112,29 @@
     - name: "[6/9] Fetch latest orchestrator and install"
       shell: |
         set -e
-        # 1. Download
-        META=$(curl -fsSL "{{ repo_api_url }}")
-        ZIP_URL=$(echo "$META" | grep -oP 'https://[^"]*Installationsmain[^"]*\.zip' | head -n 1)
+        # 1. Download - Added Cache-Control to ensure we aren't getting a stale version
+        META=$(curl -fsSL -H "Cache-Control: no-cache" "{{ repo_api_url }}")
+        
+        # Refined regex to specifically target the browser_download_url for the zip
+        ZIP_URL=$(echo "$META" | grep -oP '"browser_download_url":\s*"\Khttps://[^"]*Installationsmain[^"]*\.zip' | head -n 1)
+        VERSION=$(echo "$META" | grep -oP '"tag_name":\s*"\K[^"]+')
+        
+        if [ -z "$ZIP_URL" ]; then
+          echo "Error: Could not find zip download URL in release metadata."
+          exit 1
+        fi
+
         curl -fL "$ZIP_URL" -o "{{ work_dir }}/bundle.zip"
         unzip -q "{{ work_dir }}/bundle.zip" -d "{{ work_dir }}"
         
-        # 2. Find the real directory (handles nested folders in ZIP)
+        # 2. Find the real directory (handles nested folders like Installationsmain-V2.x.x)
         REAL_DIR=$(find "{{ work_dir }}" -name "DeviceManager_Install.sh" | head -n 1 | xargs dirname)
+        
+        if [ -z "$REAL_DIR" ]; then
+          echo "Error: Could not locate DeviceManager_Install.sh in the unzipped content."
+          exit 1
+        fi
+        
         cd "$REAL_DIR"
         
         # 3. Fix Windows line endings (prevents 'not found' errors)
@@ -110,10 +144,17 @@
         chmod +x *.sh
         yes | ./DeviceManager_Install.sh
         
-        # 5. Ensure the binary is actually in the target path
-        mkdir -p {{ install_dir }}
-        cp -f go-ble-orchestrator {{ install_dir }}/
+        # 5. Ensure the binary is actually in the target path and executable
+        # This prevents the 203/EXEC error if the installer failed to set permissions
+        if [ ! -d "{{ install_dir }}" ]; then mkdir -p "{{ install_dir }}"; fi
+        
+        # If the binary is in the current (REAL_DIR) but not moved, move it
+        if [ -f "go-ble-orchestrator" ]; then
+          cp -f go-ble-orchestrator {{ install_dir }}/
+        fi
+        
         chmod +x {{ install_dir }}/go-ble-orchestrator
+        echo "Successfully deployed $VERSION"
       register: orch_result
       changed_when: true
 
@@ -123,14 +164,22 @@
 
     - name: "[7/9] Fetch and install Gateway Dashboard"
       shell: |
-        G_META=$(curl -fsSL "{{ gateway_repo_api_url }}")
-        G_ZIP=$(echo "$G_META" | grep -oP 'https://[^"]*linux_amd64\.zip' | head -n 1)
+        set -e
+        G_META=$(curl -fsSL -H "Cache-Control: no-cache" "{{ gateway_repo_api_url }}")
+        G_ZIP=$(echo "$G_META" | grep -oP '"browser_download_url":\s*"\Khttps://[^"]*linux_amd64\.zip' | head -n 1)
+        
         mkdir -p "{{ work_dir }}/gw"
         curl -fL "$G_ZIP" -o "{{ work_dir }}/gw.zip"
         unzip -q "{{ work_dir }}/gw.zip" -d "{{ work_dir }}/gw"
+        
         mkdir -p "{{ gateway_install_dir }}"
-        cp "{{ work_dir }}/gw/config.json.example" "{{ gateway_install_dir }}/config.json"
-        cp "{{ work_dir }}/gw/gateway-dashboard" "{{ gateway_install_dir }}/"
+        
+        # Use find to locate the binary and config in case of nested folders in the gateway zip
+        GW_BIN=$(find "{{ work_dir }}/gw" -name "gateway-dashboard" | head -n 1)
+        GW_CFG=$(find "{{ work_dir }}/gw" -name "config.json.example" | head -n 1)
+        
+        cp "$GW_CFG" "{{ gateway_install_dir }}/config.json"
+        cp "$GW_BIN" "{{ gateway_install_dir }}/"
         chmod +x "{{ gateway_install_dir }}/gateway-dashboard"
       changed_when: true
 
@@ -163,7 +212,7 @@
         name: "{{ item }}"
         state: started
         enabled: yes
-      loop: # Updated from with_items
+      loop:
         - "{{ service_name }}"
         - "{{ gateway_service_name }}"
 
