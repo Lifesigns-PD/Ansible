@@ -1,7 +1,6 @@
 ---
 # deploy.yml
-# Native deployment for BLE Orchestrator and Gateway Dashboard.
-# Handles Windows Line Endings (CRLF) and dynamic path detection.
+# Surgical fix for Jinja2 parsing errors, CRLF issues, and 203/EXEC errors.
 
 - name: Deploy BLE Orchestrator + Gateway Dashboard Natively
   hosts: all
@@ -16,7 +15,6 @@
     gateway_service_name: "gateway-dashboard"
     gateway_install_dir: "/opt/gateway-dashboard"
     gateway_service_file: "/etc/systemd/system/gateway-dashboard.service"
-    orchestrator_service_file: "/etc/systemd/system/go-ble-orchestrator.service"
     backup_dir: "/opt/backups"
     repo_api_url: "https://api.github.com/repos/Lifesigns-PD/orchestrator-releases/releases/latest"
     gateway_repo_api_url: "https://api.github.com/repos/PD-dev-2025/gateway-dashboard-release/releases/latest"
@@ -24,7 +22,7 @@
   tasks:
 
     # ─────────────────────────────────────────────
-    # STEP 1: OS & PERMISSION CHECKS
+    # STEP 1: PREFLIGHT
     # ─────────────────────────────────────────────
 
     - name: "[1/9] Assert OS is Ubuntu 22.04+"
@@ -40,7 +38,7 @@
       failed_when: whoami_result.stdout != 'root'
 
     # ─────────────────────────────────────────────
-    # STEP 2: PREREQUISITES
+    # STEP 2: DEPENDENCIES & CLEANUP
     # ─────────────────────────────────────────────
 
     - name: "[2/9] Cleanup apt locks and install core tools"
@@ -55,24 +53,11 @@
         DEBIAN_FRONTEND=noninteractive apt-get install -y curl unzip zip sudo ansible python3-apt sed
       changed_when: true
 
-    # ─────────────────────────────────────────────
-    # STEP 3: BACKUP
-    # ─────────────────────────────────────────────
-
     - name: "[3/9] Create backup directory"
       file:
         path: "{{ backup_dir }}"
         state: directory
         mode: '0755'
-
-    - name: "[3/9] Backup existing orchestrator"
-      shell: |
-        if [ -d "{{ install_dir }}" ]; then
-          BACKUP_PATH="{{ backup_dir }}/orchestrator_$(date +%Y%m%d_%H%M%S)"
-          cp -r "{{ install_dir }}" "${BACKUP_PATH}"
-          ls -dt {{ backup_dir }}/orchestrator_* | tail -n +4 | xargs rm -rf || true
-        fi
-      changed_when: false
 
     # ─────────────────────────────────────────────
     # STEP 4: STOP OLD SERVICES
@@ -86,8 +71,8 @@
             systemctl disable "${svc}" || true
           fi
         done
-        pkill -x "{{ service_name }}" || true
-        pkill -x "{{ gateway_service_name }}" || true
+        pkill -x "go-ble-orchestrator" || true
+        pkill -x "gateway-dashboard" || true
         rm -rf "{{ install_dir }}"
         rm -rf "{{ gateway_install_dir }}"
       changed_when: true
@@ -106,15 +91,16 @@
         work_dir: "{{ work_dir_result.stdout | trim }}"
 
     # ─────────────────────────────────────────────
-    # STEP 6: ORCHESTRATOR INSTALL (Dynamic Fix)
+    # STEP 6: ORCHESTRATOR INSTALL (REVISED)
     # ─────────────────────────────────────────────
 
     - name: "[6/9] Fetch latest orchestrator and install"
       shell: |
         set -e
-        # 1. Fetch metadata and find the ZIP URL
-        # We avoid complex regex to prevent Ansible Jinja2 parsing errors
+        # 1. Fetch metadata (avoiding square brackets inside quotes for Ansible)
         META=$(curl -fsSL -H "Cache-Control: no-cache" "{{ repo_api_url }}")
+        
+        # Extract ZIP URL and Version simply
         ZIP_URL=$(echo "$META" | grep -o 'https://[^"]*Installationsmain[^"]*\.zip' | head -n 1)
         VERSION=$(echo "$META" | grep -oP '"tag_name":\s*"\K[^"]+')
         
@@ -123,23 +109,28 @@
         curl -fL "$ZIP_URL" -o "{{ work_dir }}/bundle.zip"
         unzip -q "{{ work_dir }}/bundle.zip" -d "{{ work_dir }}"
         
-        # 2. Find the extracted folder containing the installer
+        # 2. DYNAMIC PATH DETECTION
+        # Find where the installer script is, regardless of parent folder name
         REAL_DIR=$(find "{{ work_dir }}" -name "DeviceManager_Install.sh" | head -n 1 | xargs dirname)
         cd "$REAL_DIR"
         
-        # 3. FIX: Convert Windows Line Endings to Linux (CRLF to LF)
+        # 3. FIX WINDOWS LINE ENDINGS (CRLF TO LF)
+        # This is critical to prevent "Not found" errors on scripts
         sed -i 's/\r$//' *.sh
         
-        # 4. Make executable and run native installer
+        # 4. RUN NATIVE INSTALLER
         chmod +x *.sh
         yes | ./DeviceManager_Install.sh
         
-        # 5. Safety check: Ensure binary is in /opt
-        mkdir -p "{{ install_dir }}"
+        # 5. FINAL VERIFICATION & PERMISSIONS
+        # Ensure the binary is in /opt and is executable
+        if [ ! -d "{{ install_dir }}" ]; then mkdir -p "{{ install_dir }}"; fi
         if [ -f "go-ble-orchestrator" ]; then
           cp -f go-ble-orchestrator "{{ install_dir }}/"
-          chmod +x "{{ install_dir }}/go-ble-orchestrator"
         fi
+        chmod +x {{ install_dir }}/go-ble-orchestrator
+        
+        echo "Successfully deployed version: $VERSION"
       register: orch_result
       changed_when: true
 
@@ -159,6 +150,7 @@
         
         mkdir -p "{{ gateway_install_dir }}"
         
+        # Locate binary and config
         GW_BIN=$(find "{{ work_dir }}/gw" -name "gateway-dashboard" | head -n 1)
         GW_CFG=$(find "{{ work_dir }}/gw" -name "config.json.example" | head -n 1)
         
