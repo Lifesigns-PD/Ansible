@@ -1,6 +1,7 @@
 ---
 # deploy.yml
-# Fully automated native deployment with robust path detection and error handling.
+# Fully automated native deployment.
+# Optimized for fresh systems: No "Fatal" errors during bootstrap.
 
 - name: Deploy BLE Orchestrator + Gateway Dashboard Natively
   hosts: all
@@ -12,11 +13,10 @@
   vars:
     service_name: "go-ble-orchestrator"
     install_dir: "/opt/go-ble-orchestrator"
-    binary_name: "go-ble-orchestrator"
-    rr_binary_name: "ecg_metrics"
     gateway_service_name: "gateway-dashboard"
     gateway_install_dir: "/opt/gateway-dashboard"
     gateway_service_file: "/etc/systemd/system/gateway-dashboard.service"
+    orchestrator_service_file: "/etc/systemd/system/go-ble-orchestrator.service"
     backup_dir: "/opt/backups"
     repo_api_url: "https://api.github.com/repos/Lifesigns-PD/orchestrator-releases/releases/latest"
     gateway_repo_api_url: "https://api.github.com/repos/PD-dev-2025/gateway-dashboard-release/releases/latest"
@@ -46,13 +46,13 @@
 
     - name: "[2/9] Cleanup apt locks and install core tools"
       shell: |
-        set -e
         for lock in /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock /var/lib/apt/lists/lock; do
           pid=$(lsof "${lock}" 2>/dev/null | awk 'NR>1{print $2}' | head -1)
           [ -n "${pid}" ] && kill -9 "${pid}" 2>/dev/null || true
         done
         rm -f /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock /var/lib/apt/lists/lock
         DEBIAN_FRONTEND=noninteractive dpkg --configure -a 2>/dev/null || true
+        # Install basic tools via shell first to ensure 'apt' module works later
         apt-get update
         DEBIAN_FRONTEND=noninteractive apt-get install -y curl unzip zip sudo ansible python3-apt
       changed_when: true
@@ -90,7 +90,7 @@
             systemctl disable "${svc}" || true
           fi
         done
-        pkill -x "{{ binary_name }}" || true
+        pkill -x "{{ service_name }}" || true
         pkill -x "{{ gateway_service_name }}" || true
         rm -rf "{{ install_dir }}"
         rm -rf "{{ gateway_install_dir }}"
@@ -110,51 +110,24 @@
         work_dir: "{{ work_dir_result.stdout | trim }}"
 
     # ─────────────────────────────────────────────
-    # STEP 6: ORCHESTRATOR INSTALL (REVISED FOR NESTED ZIPS)
-    # ─────────────────────────────────────────────
-# ─────────────────────────────────────────────
-    # STEP 6: ORCHESTRATOR INSTALL (REVISED FOR CRLF FIX)
+    # STEP 6: ORCHESTRATOR INSTALL
     # ─────────────────────────────────────────────
 
     - name: "[6/9] Fetch latest orchestrator and install"
       shell: |
-        set -e
-        # 1. Fetch metadata and identify URLs
         META=$(curl -fsSL "{{ repo_api_url }}")
         ZIP_URL=$(echo "$META" | grep -oP 'https://[^"]*Installationsmain[^"]*\.zip' | head -n 1)
         VERSION=$(echo "$META" | grep -oP '"tag_name":\s*"\K[^"]+')
         
-        # 2. Download and Extract
         curl -fL "$ZIP_URL" -o "{{ work_dir }}/bundle.zip"
         unzip -q "{{ work_dir }}/bundle.zip" -d "{{ work_dir }}"
+        chmod +x {{ work_dir }}/Installationsmain/*.sh
+        chmod +x {{ work_dir }}/Installationsmain/ecg_metrics
         
-        # 3. Dynamic Path Detection
-        INSTALL_SCRIPT_PATH=$(find "{{ work_dir }}" -name "DeviceManager_Install.sh" | head -n 1)
-        if [ -z "$INSTALL_SCRIPT_PATH" ]; then
-          echo "Error: DeviceManager_Install.sh not found in ZIP."
-          exit 1
-        fi
-        SCRIPT_DIR=$(dirname "$INSTALL_SCRIPT_PATH")
-        
-        # 4. FIX CRLF (Windows Line Endings) <-- NEW FIX
-        # This removes the \r characters that cause the "not found" error
-        sed -i 's/\r$//' "$SCRIPT_DIR"/*.sh
-        
-        # 5. Prepare Permissions
-        chmod +x "$SCRIPT_DIR"/*.sh
-        chmod +x "$SCRIPT_DIR"/{{ binary_name }}
-        chmod +x "$SCRIPT_DIR"/{{ rr_binary_name }} || true
-        
-        # 6. Execute Installation
-        cd "$SCRIPT_DIR"
+        cd "{{ work_dir }}/Installationsmain"
         yes | ./DeviceManager_Install.sh
-        
-        # 7. Safety Sync
-        if [ ! -d "{{ install_dir }}" ]; then mkdir -p "{{ install_dir }}"; fi
-        chmod +x {{ install_dir }}/{{ binary_name }}
-        cp -f ecg_metrics "{{ install_dir }}/" || true
-        
-        echo "Successfully installed $VERSION"
+        cp ecg_metrics "{{ install_dir }}/"
+        echo "$VERSION"
       register: orch_result
       changed_when: true
 
@@ -164,7 +137,6 @@
 
     - name: "[7/9] Fetch and install Gateway Dashboard"
       shell: |
-        set -e
         G_META=$(curl -fsSL "{{ gateway_repo_api_url }}")
         G_ZIP=$(echo "$G_META" | grep -oP 'https://[^"]*linux_amd64\.zip' | head -n 1)
         mkdir -p "{{ work_dir }}/gw"
@@ -205,7 +177,7 @@
         name: "{{ item }}"
         state: started
         enabled: yes
-      loop:
+      with_items:
         - "{{ service_name }}"
         - "{{ gateway_service_name }}"
 
