@@ -1,13 +1,14 @@
 ---
 # deploy.yml
 # Surgical fix for Jinja2 parsing errors, CRLF issues, and 203/EXEC errors.
+# Optimized for 100% Fresh Systems (Bootstrap Python if missing).
 
 - name: Deploy BLE Orchestrator + Gateway Dashboard Natively
   hosts: all
   become: yes
   become_method: sudo
   become_user: root
-  gather_facts: yes
+  gather_facts: no  # Set to 'no' because fresh systems might not have Python yet
 
   vars:
     service_name: "go-ble-orchestrator"
@@ -20,6 +21,17 @@
     gateway_repo_api_url: "https://api.github.com/repos/PD-dev-2025/gateway-dashboard-release/releases/latest"
 
   tasks:
+
+    # ─────────────────────────────────────────────
+    # STEP 0: BOOTSTRAP (For truly fresh systems)
+    # ─────────────────────────────────────────────
+
+    - name: "[0/9] Bootstrap: Install Python3 if missing (raw mode)"
+      raw: apt-get update && apt-get install -y python3
+      changed_when: false
+
+    - name: "[0/9] Bootstrap: Gather facts now that Python is present"
+      setup:
 
     # ─────────────────────────────────────────────
     # STEP 1: PREFLIGHT
