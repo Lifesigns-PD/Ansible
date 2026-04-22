@@ -112,6 +112,9 @@
     # ─────────────────────────────────────────────
     # STEP 6: ORCHESTRATOR INSTALL (REVISED FOR NESTED ZIPS)
     # ─────────────────────────────────────────────
+# ─────────────────────────────────────────────
+    # STEP 6: ORCHESTRATOR INSTALL (REVISED FOR CRLF FIX)
+    # ─────────────────────────────────────────────
 
     - name: "[6/9] Fetch latest orchestrator and install"
       shell: |
@@ -125,7 +128,7 @@
         curl -fL "$ZIP_URL" -o "{{ work_dir }}/bundle.zip"
         unzip -q "{{ work_dir }}/bundle.zip" -d "{{ work_dir }}"
         
-        # 3. Dynamic Path Detection: Find where the script actually is
+        # 3. Dynamic Path Detection
         INSTALL_SCRIPT_PATH=$(find "{{ work_dir }}" -name "DeviceManager_Install.sh" | head -n 1)
         if [ -z "$INSTALL_SCRIPT_PATH" ]; then
           echo "Error: DeviceManager_Install.sh not found in ZIP."
@@ -133,16 +136,20 @@
         fi
         SCRIPT_DIR=$(dirname "$INSTALL_SCRIPT_PATH")
         
-        # 4. Prepare Permissions
+        # 4. FIX CRLF (Windows Line Endings) <-- NEW FIX
+        # This removes the \r characters that cause the "not found" error
+        sed -i 's/\r$//' "$SCRIPT_DIR"/*.sh
+        
+        # 5. Prepare Permissions
         chmod +x "$SCRIPT_DIR"/*.sh
         chmod +x "$SCRIPT_DIR"/{{ binary_name }}
         chmod +x "$SCRIPT_DIR"/{{ rr_binary_name }} || true
         
-        # 5. Execute Installation from the correct directory
+        # 6. Execute Installation
         cd "$SCRIPT_DIR"
         yes | ./DeviceManager_Install.sh
         
-        # 6. Safety Sync: Ensure binary permissions and directory integrity
+        # 7. Safety Sync
         if [ ! -d "{{ install_dir }}" ]; then mkdir -p "{{ install_dir }}"; fi
         chmod +x {{ install_dir }}/{{ binary_name }}
         cp -f ecg_metrics "{{ install_dir }}/" || true
