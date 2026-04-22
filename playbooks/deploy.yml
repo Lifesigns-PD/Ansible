@@ -1,6 +1,7 @@
 ---
 # deploy.yml
-# Surgical fix for 203/EXEC, pathing errors, and release-fetching logic.
+# Native deployment for BLE Orchestrator and Gateway Dashboard.
+# Handles Windows Line Endings (CRLF) and dynamic path detection.
 
 - name: Deploy BLE Orchestrator + Gateway Dashboard Natively
   hosts: all
@@ -17,7 +18,6 @@
     gateway_service_file: "/etc/systemd/system/gateway-dashboard.service"
     orchestrator_service_file: "/etc/systemd/system/go-ble-orchestrator.service"
     backup_dir: "/opt/backups"
-    # Added /releases (instead of /releases/latest) can sometimes help if "latest" is cached or pointing to a non-draft pre-release
     repo_api_url: "https://api.github.com/repos/Lifesigns-PD/orchestrator-releases/releases/latest"
     gateway_repo_api_url: "https://api.github.com/repos/PD-dev-2025/gateway-dashboard-release/releases/latest"
 
@@ -40,7 +40,7 @@
       failed_when: whoami_result.stdout != 'root'
 
     # ─────────────────────────────────────────────
-    # STEP 2: SILENT PREREQUISITE INSTALLATION
+    # STEP 2: PREREQUISITES
     # ─────────────────────────────────────────────
 
     - name: "[2/9] Cleanup apt locks and install core tools"
@@ -52,7 +52,7 @@
         rm -f /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock /var/lib/apt/lists/lock
         DEBIAN_FRONTEND=noninteractive dpkg --configure -a 2>/dev/null || true
         apt-get update
-        DEBIAN_FRONTEND=noninteractive apt-get install -y curl unzip zip sudo ansible python3-apt
+        DEBIAN_FRONTEND=noninteractive apt-get install -y curl unzip zip sudo ansible python3-apt sed
       changed_when: true
 
     # ─────────────────────────────────────────────
@@ -93,7 +93,7 @@
       changed_when: true
 
     # ─────────────────────────────────────────────
-    # STEP 5: TEMP WORKING DIR
+    # STEP 5: TEMP DIR
     # ─────────────────────────────────────────────
 
     - name: "[5/9] Create temp working directory"
@@ -106,55 +106,40 @@
         work_dir: "{{ work_dir_result.stdout | trim }}"
 
     # ─────────────────────────────────────────────
-    # STEP 6: ORCHESTRATOR INSTALL (Surgical Fix)
+    # STEP 6: ORCHESTRATOR INSTALL (Dynamic Fix)
     # ─────────────────────────────────────────────
 
     - name: "[6/9] Fetch latest orchestrator and install"
       shell: |
         set -e
-        # 1. Download - Added Cache-Control to ensure we aren't getting a stale version
+        # 1. Fetch metadata and find the ZIP URL
+        # We avoid complex regex to prevent Ansible Jinja2 parsing errors
         META=$(curl -fsSL -H "Cache-Control: no-cache" "{{ repo_api_url }}")
-        
-        # Refined regex to specifically target the browser_download_url for the zip
-        ZIP_URL=$(echo "$META" | grep -oP '"browser_download_url":\s*"\Khttps://[^"]*Installationsmain[^"]*\.zip' | head -n 1)
+        ZIP_URL=$(echo "$META" | grep -o 'https://[^"]*Installationsmain[^"]*\.zip' | head -n 1)
         VERSION=$(echo "$META" | grep -oP '"tag_name":\s*"\K[^"]+')
         
-        if [ -z "$ZIP_URL" ]; then
-          echo "Error: Could not find zip download URL in release metadata."
-          exit 1
-        fi
+        if [ -z "$ZIP_URL" ]; then exit 1; fi
 
         curl -fL "$ZIP_URL" -o "{{ work_dir }}/bundle.zip"
         unzip -q "{{ work_dir }}/bundle.zip" -d "{{ work_dir }}"
         
-        # 2. Find the real directory (handles nested folders like Installationsmain-V2.x.x)
+        # 2. Find the extracted folder containing the installer
         REAL_DIR=$(find "{{ work_dir }}" -name "DeviceManager_Install.sh" | head -n 1 | xargs dirname)
-        
-        if [ -z "$REAL_DIR" ]; then
-          echo "Error: Could not locate DeviceManager_Install.sh in the unzipped content."
-          exit 1
-        fi
-        
         cd "$REAL_DIR"
         
-        # 3. Fix Windows line endings (prevents 'not found' errors)
+        # 3. FIX: Convert Windows Line Endings to Linux (CRLF to LF)
         sed -i 's/\r$//' *.sh
         
-        # 4. Run your installer
+        # 4. Make executable and run native installer
         chmod +x *.sh
         yes | ./DeviceManager_Install.sh
         
-        # 5. Ensure the binary is actually in the target path and executable
-        # This prevents the 203/EXEC error if the installer failed to set permissions
-        if [ ! -d "{{ install_dir }}" ]; then mkdir -p "{{ install_dir }}"; fi
-        
-        # If the binary is in the current (REAL_DIR) but not moved, move it
+        # 5. Safety check: Ensure binary is in /opt
+        mkdir -p "{{ install_dir }}"
         if [ -f "go-ble-orchestrator" ]; then
-          cp -f go-ble-orchestrator {{ install_dir }}/
+          cp -f go-ble-orchestrator "{{ install_dir }}/"
+          chmod +x "{{ install_dir }}/go-ble-orchestrator"
         fi
-        
-        chmod +x {{ install_dir }}/go-ble-orchestrator
-        echo "Successfully deployed $VERSION"
       register: orch_result
       changed_when: true
 
@@ -166,7 +151,7 @@
       shell: |
         set -e
         G_META=$(curl -fsSL -H "Cache-Control: no-cache" "{{ gateway_repo_api_url }}")
-        G_ZIP=$(echo "$G_META" | grep -oP '"browser_download_url":\s*"\Khttps://[^"]*linux_amd64\.zip' | head -n 1)
+        G_ZIP=$(echo "$G_META" | grep -o 'https://[^"]*linux_amd64\.zip' | head -n 1)
         
         mkdir -p "{{ work_dir }}/gw"
         curl -fL "$G_ZIP" -o "{{ work_dir }}/gw.zip"
@@ -174,7 +159,6 @@
         
         mkdir -p "{{ gateway_install_dir }}"
         
-        # Use find to locate the binary and config in case of nested folders in the gateway zip
         GW_BIN=$(find "{{ work_dir }}/gw" -name "gateway-dashboard" | head -n 1)
         GW_CFG=$(find "{{ work_dir }}/gw" -name "config.json.example" | head -n 1)
         
@@ -216,6 +200,10 @@
         - "{{ service_name }}"
         - "{{ gateway_service_name }}"
 
+    # ─────────────────────────────────────────────
+    # STEP 9: CLEANUP & VALIDATE
+    # ─────────────────────────────────────────────
+
     - name: "[9/9] Final Service Check"
       shell: |
         echo "Orchestrator: $(systemctl is-active {{ service_name }})"
@@ -223,7 +211,7 @@
       register: final_status
       changed_when: false
 
-    - name: "[9/9] Cleanup and Finish"
+    - name: "[9/9] Cleanup"
       file:
         path: "{{ work_dir }}"
         state: absent
