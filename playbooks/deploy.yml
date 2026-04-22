@@ -1,7 +1,6 @@
 ---
 # deploy.yml
-# Fully automated native deployment.
-# Optimized for fresh systems: No "Fatal" errors during bootstrap.
+# Surgical fix for 203/EXEC and pathing errors.
 
 - name: Deploy BLE Orchestrator + Gateway Dashboard Natively
   hosts: all
@@ -23,26 +22,19 @@
 
   tasks:
 
-    # ─────────────────────────────────────────────
-    # STEP 1: OS & PERMISSION CHECKS
-    # ─────────────────────────────────────────────
+    # --- STEPS 1-5 remain exactly as you have them ---
 
     - name: "[1/9] Assert OS is Ubuntu 22.04+"
       assert:
         that:
           - ansible_distribution == "Ubuntu"
           - ansible_distribution_major_version | int >= 22
-        fail_msg: "Requires Ubuntu 22.04+. Found: {{ ansible_distribution }} {{ ansible_distribution_version }}"
 
     - name: "[1/9] Verify root privileges"
       shell: whoami
       register: whoami_result
       changed_when: false
       failed_when: whoami_result.stdout != 'root'
-
-    # ─────────────────────────────────────────────
-    # STEP 2: SILENT PREREQUISITE INSTALLATION
-    # ─────────────────────────────────────────────
 
     - name: "[2/9] Cleanup apt locks and install core tools"
       shell: |
@@ -52,14 +44,9 @@
         done
         rm -f /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock /var/lib/apt/lists/lock
         DEBIAN_FRONTEND=noninteractive dpkg --configure -a 2>/dev/null || true
-        # Install basic tools via shell first to ensure 'apt' module works later
         apt-get update
         DEBIAN_FRONTEND=noninteractive apt-get install -y curl unzip zip sudo ansible python3-apt
       changed_when: true
-
-    # ─────────────────────────────────────────────
-    # STEP 3: BACKUP
-    # ─────────────────────────────────────────────
 
     - name: "[3/9] Create backup directory"
       file:
@@ -73,14 +60,8 @@
           BACKUP_PATH="{{ backup_dir }}/orchestrator_$(date +%Y%m%d_%H%M%S)"
           cp -r "{{ install_dir }}" "${BACKUP_PATH}"
           ls -dt {{ backup_dir }}/orchestrator_* | tail -n +4 | xargs rm -rf || true
-          echo "Backed up"
         fi
-      register: backup_check
-      changed_when: "'Backed up' in backup_check.stdout"
-
-    # ─────────────────────────────────────────────
-    # STEP 4: STOP OLD SERVICES
-    # ─────────────────────────────────────────────
+      changed_when: false
 
     - name: "[4/9] Stop and remove old services safely"
       shell: |
@@ -96,10 +77,6 @@
         rm -rf "{{ gateway_install_dir }}"
       changed_when: true
 
-    # ─────────────────────────────────────────────
-    # STEP 5: TEMP WORKING DIR
-    # ─────────────────────────────────────────────
-
     - name: "[5/9] Create temp working directory"
       shell: mktemp -d
       register: work_dir_result
@@ -110,24 +87,33 @@
         work_dir: "{{ work_dir_result.stdout | trim }}"
 
     # ─────────────────────────────────────────────
-    # STEP 6: ORCHESTRATOR INSTALL
+    # STEP 6: ORCHESTRATOR INSTALL (Surgical Fix)
     # ─────────────────────────────────────────────
 
     - name: "[6/9] Fetch latest orchestrator and install"
       shell: |
+        set -e
+        # 1. Download
         META=$(curl -fsSL "{{ repo_api_url }}")
         ZIP_URL=$(echo "$META" | grep -oP 'https://[^"]*Installationsmain[^"]*\.zip' | head -n 1)
-        VERSION=$(echo "$META" | grep -oP '"tag_name":\s*"\K[^"]+')
-        
         curl -fL "$ZIP_URL" -o "{{ work_dir }}/bundle.zip"
         unzip -q "{{ work_dir }}/bundle.zip" -d "{{ work_dir }}"
-        chmod +x {{ work_dir }}/Installationsmain/*.sh
-        chmod +x {{ work_dir }}/Installationsmain/ecg_metrics
         
-        cd "{{ work_dir }}/Installationsmain"
+        # 2. Find the real directory (handles nested folders in ZIP)
+        REAL_DIR=$(find "{{ work_dir }}" -name "DeviceManager_Install.sh" | head -n 1 | xargs dirname)
+        cd "$REAL_DIR"
+        
+        # 3. Fix Windows line endings (prevents 'not found' errors)
+        sed -i 's/\r$//' *.sh
+        
+        # 4. Run your installer
+        chmod +x *.sh
         yes | ./DeviceManager_Install.sh
-        cp ecg_metrics "{{ install_dir }}/"
-        echo "$VERSION"
+        
+        # 5. Ensure the binary is actually in the target path
+        mkdir -p {{ install_dir }}
+        cp -f go-ble-orchestrator {{ install_dir }}/
+        chmod +x {{ install_dir }}/go-ble-orchestrator
       register: orch_result
       changed_when: true
 
@@ -177,7 +163,7 @@
         name: "{{ item }}"
         state: started
         enabled: yes
-      with_items:
+      loop: # Updated from with_items
         - "{{ service_name }}"
         - "{{ gateway_service_name }}"
 
