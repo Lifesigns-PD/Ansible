@@ -1,0 +1,263 @@
+---
+# unified-deploy.yml
+# Unified playbook for Deploying or Rolling back the BLE Orchestrator + Gateway Dashboard
+# Usage:
+#   ansible-playbook -i inventory/production.yml playbooks/unified-deploy.yml -e "action=deploy"
+#   ansible-playbook -i inventory/production.yml playbooks/unified-deploy.yml -e "action=rollback"
+
+- name: Unified Deploy / Rollback for BLE Orchestrator + Gateway Dashboard
+  hosts: all
+  become: yes
+  become_method: sudo
+  become_user: root
+  gather_facts: no  # Set to 'no' because fresh systems might not have Python yet
+
+  vars:
+    action: "deploy" # Can be 'deploy' or 'rollback'
+    target_index: "{{ 0 if action == 'deploy' else 1 }}"
+    service_name: "go-ble-orchestrator"
+    install_dir: "/opt/go-ble-orchestrator"
+    gateway_service_name: "gateway-dashboard"
+    gateway_install_dir: "/opt/gateway-dashboard"
+    gateway_service_file: "/etc/systemd/system/gateway-dashboard.service"
+
+  tasks:
+
+    # ─────────────────────────────────────────────
+    # STEP 0: BOOTSTRAP (For truly fresh systems)
+    # ─────────────────────────────────────────────
+
+    - name: "[0/9] Bootstrap: Install Python3 if missing (raw mode)"
+      raw: apt-get update && apt-get install -y python3
+      changed_when: false
+
+    - name: "[0/9] Bootstrap: Gather facts now that Python is present"
+      setup:
+
+    # ─────────────────────────────────────────────
+    # STEP 1: PREFLIGHT & FETCH METADATA
+    # ─────────────────────────────────────────────
+
+    - name: "[1/9] Assert OS is Ubuntu 22.04+"
+      assert:
+        that:
+          - ansible_distribution == "Ubuntu"
+          - ansible_distribution_major_version | int >= 22
+
+    - name: "[1/9] Verify root privileges"
+      shell: whoami
+      register: whoami_result
+      changed_when: false
+      failed_when: whoami_result.stdout != 'root'
+
+    - name: "[1/9] Fetch Orchestrator releases from GitHub API"
+      uri:
+        url: "https://api.github.com/repos/Lifesigns-PD/orchestrator-releases/releases"
+        return_content: yes
+        headers:
+          Cache-Control: "no-cache"
+      register: orch_api_res
+
+    - name: "[1/9] Parse Orchestrator Release Info"
+      set_fact:
+        orch_version: "{{ orch_valid_releases[target_index | int].tag_name }}"
+        orch_zip_url: "{{ item.browser_download_url }}"
+      loop: "{{ orch_valid_releases[target_index | int].assets }}"
+      when: "'Installationsmain' in item.name and item.name.endswith('.zip')"
+      vars:
+        orch_valid_releases: "{{ orch_api_res.json | selectattr('prerelease', 'equalto', false) | selectattr('draft', 'equalto', false) | list }}"
+
+    - name: "[1/9] Fetch Gateway releases from GitHub API"
+      uri:
+        url: "https://api.github.com/repos/PD-dev-2025/gateway-dashboard-release/releases"
+        return_content: yes
+        headers:
+          Cache-Control: "no-cache"
+      register: gw_api_res
+
+    - name: "[1/9] Parse Gateway Release Info"
+      set_fact:
+        gw_version: "{{ gw_valid_releases[target_index | int].tag_name }}"
+        gw_zip_url: "{{ item.browser_download_url }}"
+      loop: "{{ gw_valid_releases[target_index | int].assets }}"
+      when: "'linux_amd64.zip' in item.name"
+      vars:
+        gw_valid_releases: "{{ gw_api_res.json | selectattr('prerelease', 'equalto', false) | selectattr('draft', 'equalto', false) | list }}"
+
+    - name: "[1/9] Display Release Selection"
+      debug:
+        msg: |
+          Action: {{ action | upper }}
+          Target Index: {{ target_index }}
+          Orchestrator Version: {{ orch_version }} -> {{ orch_zip_url }}
+          Gateway Version: {{ gw_version }} -> {{ gw_zip_url }}
+
+    - name: "[1/9] Ensure URLs were found"
+      fail:
+        msg: "Failed to parse download URLs from GitHub API."
+      when: orch_zip_url is not defined or gw_zip_url is not defined
+
+    # ─────────────────────────────────────────────
+    # STEP 2: DEPENDENCIES & CLEANUP
+    # ─────────────────────────────────────────────
+
+    - name: "[2/9] Cleanup apt locks and install core tools"
+      shell: |
+        for lock in /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock /var/lib/apt/lists/lock; do
+          pid=$(lsof "${lock}" 2>/dev/null | awk 'NR>1{print $2}' | head -1)
+          [ -n "${pid}" ] && kill -9 "${pid}" 2>/dev/null || true
+        done
+        rm -f /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock /var/lib/apt/lists/lock
+        DEBIAN_FRONTEND=noninteractive dpkg --configure -a 2>/dev/null || true
+        apt-get update
+        DEBIAN_FRONTEND=noninteractive apt-get install -y curl unzip zip sudo python3-apt sed
+      changed_when: true
+
+    # ─────────────────────────────────────────────
+    # STEP 3: STOP OLD SERVICES
+    # ─────────────────────────────────────────────
+
+    - name: "[3/9] Stop and remove old services safely"
+      shell: |
+        for svc in "{{ service_name }}" "{{ gateway_service_name }}"; do
+          if systemctl list-unit-files "${svc}.service" >/dev/null 2>&1; then
+            systemctl stop "${svc}" || true
+            systemctl disable "${svc}" || true
+          fi
+        done
+        pkill -x "go-ble-orchestrator" || true
+        pkill -x "gateway-dashboard" || true
+        rm -rf "{{ install_dir }}"
+        rm -rf "{{ gateway_install_dir }}"
+      changed_when: true
+
+    # ─────────────────────────────────────────────
+    # STEP 4: TEMP DIR
+    # ─────────────────────────────────────────────
+
+    - name: "[4/9] Create temp working directory"
+      shell: mktemp -d
+      register: work_dir_result
+      changed_when: false
+
+    - name: "[4/9] Set work_dir fact"
+      set_fact:
+        work_dir: "{{ work_dir_result.stdout | trim }}"
+
+    # ─────────────────────────────────────────────
+    # STEP 5: ORCHESTRATOR INSTALL
+    # ─────────────────────────────────────────────
+
+    - name: "[5/9] Fetch Orchestrator and install"
+      shell: |
+        set -e
+        curl -fL "{{ orch_zip_url }}" -o "{{ work_dir }}/bundle.zip"
+        unzip -q "{{ work_dir }}/bundle.zip" -d "{{ work_dir }}"
+        
+        # DYNAMIC PATH DETECTION
+        REAL_DIR=$(find "{{ work_dir }}" -name "DeviceManager_Install.sh" | head -n 1 | xargs dirname)
+        cd "$REAL_DIR"
+        
+        # FIX WINDOWS LINE ENDINGS (CRLF TO LF)
+        sed -i 's/\r$//' *.sh
+        
+        # RUN NATIVE INSTALLER
+        chmod +x *.sh
+        yes | ./DeviceManager_Install.sh
+        
+        # FINAL VERIFICATION & PERMISSIONS
+        if [ ! -d "{{ install_dir }}" ]; then mkdir -p "{{ install_dir }}"; fi
+        if [ -f "go-ble-orchestrator" ]; then
+          cp -f go-ble-orchestrator "{{ install_dir }}/"
+        fi
+        chmod +x {{ install_dir }}/go-ble-orchestrator
+      changed_when: true
+
+    # ─────────────────────────────────────────────
+    # STEP 6: GATEWAY INSTALL
+    # ─────────────────────────────────────────────
+
+    - name: "[6/9] Fetch and install Gateway Dashboard"
+      shell: |
+        set -e
+        mkdir -p "{{ work_dir }}/gw"
+        curl -fL "{{ gw_zip_url }}" -o "{{ work_dir }}/gw.zip"
+        unzip -q "{{ work_dir }}/gw.zip" -d "{{ work_dir }}/gw"
+        
+        mkdir -p "{{ gateway_install_dir }}"
+        
+        # Locate binary and config
+        GW_BIN=$(find "{{ work_dir }}/gw" -name "gateway-dashboard" | head -n 1)
+        GW_CFG=$(find "{{ work_dir }}/gw" -name "config.json.example" | head -n 1)
+        
+        cp "$GW_CFG" "{{ gateway_install_dir }}/config.json"
+        cp "$GW_BIN" "{{ gateway_install_dir }}/"
+        chmod +x "{{ gateway_install_dir }}/gateway-dashboard"
+      changed_when: true
+
+    - name: "[6/9] Create gateway systemd file"
+      copy:
+        dest: "{{ gateway_service_file }}"
+        content: |
+          [Unit]
+          Description=Gateway Dashboard Service
+          After=network.target
+
+          [Service]
+          Type=simple
+          User=root
+          WorkingDirectory={{ gateway_install_dir }}
+          ExecStart={{ gateway_install_dir }}/gateway-dashboard
+          Restart=always
+          RestartSec=5
+
+          [Install]
+          WantedBy=multi-user.target
+
+    # ─────────────────────────────────────────────
+    # STEP 7: START & VERIFY
+    # ─────────────────────────────────────────────
+
+    - name: "[7/9] Start Services"
+      systemd:
+        daemon_reload: yes
+        name: "{{ item }}"
+        state: started
+        enabled: yes
+      loop:
+        - "{{ service_name }}"
+        - "{{ gateway_service_name }}"
+
+    # ─────────────────────────────────────────────
+    # STEP 8: CLEANUP & VALIDATE
+    # ─────────────────────────────────────────────
+
+    - name: "[8/9] Final Service Check"
+      shell: |
+        echo "Orchestrator: $(systemctl is-active {{ service_name }})"
+        echo "Gateway: $(systemctl is-active {{ gateway_service_name }})"
+      register: final_status
+      changed_when: false
+
+    - name: "[8/9] Cleanup"
+      file:
+        path: "{{ work_dir }}"
+        state: absent
+      changed_when: false
+
+    - name: "[8/9] Validate Deployment"
+      fail:
+        msg: "Services failed to start: {{ final_status.stdout }}"
+      when: "'inactive' in final_status.stdout"
+
+    - name: "[9/9] Deployment Summary"
+      debug:
+        msg: |
+          ════════════════════════════════════════════════════
+                         {{ action | upper }} COMPLETE
+          ════════════════════════════════════════════════════
+           Host:                {{ inventory_hostname }}
+           Orchestrator Version: {{ orch_version }}
+           Gateway Version:      {{ gw_version }}
+           Services Status:      ACTIVE
+          ════════════════════════════════════════════════════
